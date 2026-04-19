@@ -1,0 +1,9 @@
+{
+  "name": "opencode-self-improve",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "evaluate": "node scripts/evaluate.js",
+    "evolve": "node scripts/evolve.js"
+  }
+}
