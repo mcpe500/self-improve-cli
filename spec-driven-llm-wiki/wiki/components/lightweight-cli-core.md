@@ -16,6 +16,7 @@ last_updated: 2026-04-26
 - Compile active profile into compact prompt text.
 - Record events and patch audits under `.selfimprove/`.
 - Provide basic coding tools without platform shell dependency.
+- Support `[[components/agent-chat-loop]]` with profile prompt and tool policy.
 
 ## Performance Constraints
 

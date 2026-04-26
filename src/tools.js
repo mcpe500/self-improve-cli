@@ -45,6 +45,24 @@ async function* walk(root, dir, options = {}) {
   }
 }
 
+async function editFileTool(root, target, oldText, newText) {
+  if (!target) throw new Error('edit_file path required');
+  if (typeof oldText !== 'string' || oldText.length === 0) throw new Error('edit_file old_text required');
+  if (typeof newText !== 'string') throw new Error('edit_file new_text must be string');
+  const file = resolveInside(root, target);
+  const content = await fs.readFile(file, 'utf8');
+  const first = content.indexOf(oldText);
+  if (first === -1) throw new Error('old_text not found');
+  if (content.indexOf(oldText, first + oldText.length) !== -1) throw new Error('old_text is not unique');
+  const next = `${content.slice(0, first)}${newText}${content.slice(first + oldText.length)}`;
+  await fs.writeFile(file, next, 'utf8');
+  return {
+    path: path.relative(root, file) || '.',
+    replaced_bytes: Buffer.byteLength(oldText),
+    inserted_bytes: Buffer.byteLength(newText)
+  };
+}
+
 async function searchTool(root, pattern, dir = '.', { limit = DEFAULT_MATCH_LIMIT, readLimit = DEFAULT_READ_LIMIT } = {}) {
   if (!pattern) throw new Error('search pattern required');
   const start = resolveInside(root, dir);
@@ -102,6 +120,7 @@ function runCommandTool(root, command, args = [], { timeoutMs = 120000 } = {}) {
 
 module.exports = {
   readFileTool,
+  editFileTool,
   searchTool,
   runCommandTool,
   resolveInside

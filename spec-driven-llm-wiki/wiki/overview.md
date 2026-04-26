@@ -13,12 +13,13 @@ This wiki starts empty. It will accumulate project knowledge as specs are create
 
 - `spec-driven-llm-wiki` is a portable spec-driven development agent methodology.
 - Parent project now contains a lightweight self-improving coding CLI MVP.
-- MVP uses plain JavaScript, Node.js built-ins, JSON profiles, growth gates, event logs, and patch audits.
+- MVP uses plain JavaScript, Node.js built-ins, JSON profiles, growth gates, event logs, patch audits, and an interactive chat loop.
 - Core deterministic tooling is intended to work offline.
 
 ## Active Components
 
 - [[components/lightweight-cli-core]]
+- [[components/agent-chat-loop]]
 
 ## Active Decisions
 
@@ -26,6 +27,6 @@ This wiki starts empty. It will accumulate project knowledge as specs are create
 
 ## Next Memory Updates
 
-- Add model-provider and tool-calling components when implemented.
+- Add streaming provider output when tool-call streaming is implemented.
 - Add rollback snapshot pattern when profile rollback is implemented beyond audit logs.
 - Add performance measurements once CLI grows beyond MVP.

@@ -8,6 +8,7 @@
 Generated or curated component pages live in `components/`.
 
 - [Lightweight CLI Core](components/lightweight-cli-core.md)
+- [Agent Chat Loop](components/agent-chat-loop.md)
 
 ## Decisions
 

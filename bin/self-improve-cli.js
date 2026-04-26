@@ -4,12 +4,19 @@
 const fs = require('node:fs/promises');
 const { GROWTH_LEVELS, compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('../src/profile');
 const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getStatus } = require('../src/state');
-const { readFileTool, searchTool, runCommandTool } = require('../src/tools');
+const { readFileTool, searchTool, runCommandTool, editFileTool } = require('../src/tools');
+const { loadConfig, setConfigValue } = require('../src/config');
+const { runAgentTask, startChat } = require('../src/agent');
 
 function usage() {
   return `sicli - lightweight self-improve coding CLI
 
 Usage:
+  sicli
+  sicli chat [prompt...] [--yes] [--trace]
+  sicli config show
+  sicli config get <key>
+  sicli config set <key> <value>
   sicli init
   sicli status
   sicli profile [--json|--prompt]
@@ -20,6 +27,7 @@ Usage:
   sicli tool read <file>
   sicli tool search <text> [dir]
   sicli tool run <cmd> [args...]
+  sicli tool edit <file> <old_text> <new_text>
 
 Notes:
   - State lives in .selfimprove/.
@@ -74,8 +82,13 @@ async function main() {
   const [command, ...args] = process.argv.slice(2);
   const { flags, rest } = command === 'tool' ? { flags: {}, rest: args } : parseFlags(args);
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
+  if (command === 'help' || command === '--help' || command === '-h') {
     process.stdout.write(usage());
+    return;
+  }
+
+  if (!command) {
+    await startChat(root, { interactive: true });
     return;
   }
 
@@ -87,6 +100,35 @@ async function main() {
 
   if (command === 'status') {
     printJson(await getStatus(root));
+    return;
+  }
+
+  if (command === 'config') {
+    const [action, key, ...valueParts] = rest;
+    if (!action || action === 'show') {
+      printJson(await loadConfig(root));
+      return;
+    }
+    if (action === 'get') {
+      const config = await loadConfig(root);
+      printJson({ [key]: config[key] });
+      return;
+    }
+    if (action === 'set') {
+      printJson(await setConfigValue(root, key, valueParts.join(' ')));
+      return;
+    }
+    throw new Error(`unknown config action: ${action}`);
+  }
+
+  if (command === 'chat') {
+    const prompt = rest.join(' ').trim();
+    if (!prompt) {
+      await startChat(root, { interactive: true, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
+      return;
+    }
+    const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
+    process.stdout.write(`${result.text}\n`);
     return;
   }
 
@@ -150,6 +192,10 @@ async function main() {
     }
     if (tool === 'run') {
       printJson(await runCommandTool(root, toolArgs[0], toolArgs.slice(1)));
+      return;
+    }
+    if (tool === 'edit') {
+      printJson(await editFileTool(root, toolArgs[0], toolArgs[1], toolArgs[2] || ''));
       return;
     }
     throw new Error(`unknown tool: ${tool || '(missing)'}`);
