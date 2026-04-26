@@ -1,9 +1,16 @@
 {
-  "name": "opencode-self-improve",
-  "private": true,
-  "type": "module",
+  "name": "self-improve-cli",
+  "version": "0.1.0",
+  "description": "Lightweight self-improving agentic coding CLI prototype.",
+  "license": "MIT",
+  "bin": {
+    "sicli": "bin/self-improve-cli.js"
+  },
   "scripts": {
-    "evaluate": "node scripts/evaluate.js",
-    "evolve": "node scripts/evolve.js"
+    "test": "node --test",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

@@ -1,79 +1,80 @@
-# opencode-self-improve
+# self-improve-cli
 
-A minimal, cross-platform starter repo for making an OpenCode setup improve its wrapper over time.
+A minimal, cross-platform starter repo for building a lightweight self-improving agentic coding CLI.
 
-This starter keeps the model fixed and improves the surrounding behavior:
-- rules
-- skill instructions
-- commands
-- plugin automation
-- evaluation and replay prompts
+The MVP keeps model/provider work optional and improves the surrounding behavior first:
+- JSON profile rules
+- tool policy
+- durable memory/lessons
+- growth gates
+- event and patch audit logs
 
 ## Design goals
 - Plain JavaScript only
 - No Bash, PowerShell, or AppleScript in the core loop
 - Works on Linux, macOS, and Windows
 - Manual by default
-- Optional auto-run on OpenCode idle
+- Optional auto-apply only when profile growth policy allows it
+- Low memory: no Electron, no default indexer, no LSP/embeddings/watchers by default
 
 ## What this measures
-This starter scores:
-- test commands you configure in `eval/config.json`
-- replay prompts you configure in `eval/config.json`
 
-This starter does **not** directly inspect private chain-of-thought. It uses visible output and pass/fail checks as a proxy.
+Current MVP validates profile behavior with built-in Node tests and records observed failures into `.selfimprove/events.jsonl`. Future evaluation/replay scoring can plug into the same event and patch logs.
 
 ## Files
-- `AGENTS.md` project rules for OpenCode
-- `.opencode/skills/self-improve/SKILL.md` reusable skill
-- `.opencode/commands/evolve.md` manual command in the TUI
-- `.opencode/plugins/auto-evolve.js` optional idle automation
-- `scripts/evaluate.js` run tests + replay prompts and write a score
-- `scripts/evolve.js` evaluate, then ask OpenCode to propose one safe improvement
-- `eval/config.json` your benchmark settings
+- `AGENTS.md` project rules for agents working in this repo
+- `bin/self-improve-cli.js` zero-dependency CLI entrypoint
+- `src/profile.js` profile validation, prompt compilation, JSON patch, growth gates
+- `src/state.js` `.selfimprove/` state, event log, patch audit, overlay mutation
+- `src/tools.js` lightweight file read, search, and command tools
+- `profiles/default.profile.json` immutable default profile template
+- `test/profile.test.js` built-in Node tests
+- `spec-driven-llm-wiki/` spec-driven project memory
 
 ## Manual use
 From the repo root:
 
-- `node scripts/evaluate.js`
-- `node scripts/evolve.js`
-
-If you use Bun instead of Node:
-
-- `bun scripts/evaluate.js`
-- `bun scripts/evolve.js`
-
-Inside OpenCode, you can also use `/evolve`.
-
-## Enable automatic idle runs
-Edit `eval/config.json` and set:
-
-```json
-{
-  "automaticOnIdle": true
-}
+```bash
+npm test
+node bin/self-improve-cli.js init
+node bin/self-improve-cli.js status
+node bin/self-improve-cli.js profile --prompt
+node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first"
+node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first" --apply
 ```
 
-The plugin will stay idle until that flag is true.
+Optional local install:
 
-## Configure tests
-Edit `eval/config.json` and add test commands as arrays:
-
-```json
-{
-  "tests": [
-    ["npm", "test"],
-    ["npm", "run", "lint"],
-    ["python", "-m", "pytest", "-q"]
-  ]
-}
+```bash
+npm link
+sicli status
 ```
 
-Use only commands that exist on your machine.
+## Growth policy
 
-## Configure replay prompts
-Edit `eval/config.json` and add prompts you want OpenCode to answer repeatedly.
-Each replay can check for required phrases and reward concise output.
+Active profile lives in `.selfimprove/base.profile.json` + `.selfimprove/overlay.profile.json`.
+
+- `none`: no profile mutation
+- `low`: propose only; human may apply safe patches
+- `medium`: can auto-apply safe rule/memory patches when `auto_apply=true`
+- `high`: can also patch style/tool policy
+- `very_high`: broader patch surface, still protected from self-escalating growth level
+
+Change local growth level:
+
+```bash
+node bin/self-improve-cli.js growth medium --auto-apply true
+```
+
+## Coding tools
+
+```bash
+node bin/self-improve-cli.js tool read README.md
+node bin/self-improve-cli.js tool search profile .
+node bin/self-improve-cli.js tool run npm test
+```
+
+`tool run` uses `child_process.spawn` with `shell: false`.
 
 ## Notes for Windows
-This repo avoids platform-specific shell scripts, but OpenCode itself recommends WSL on Windows for the best experience.
+This repo avoids platform-specific shell scripts and runs with Node.js on Windows, Linux, and macOS.

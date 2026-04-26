@@ -1,0 +1,35 @@
+{
+  "id": "default",
+  "version": 1,
+  "description": "Lightweight default profile for self-improving coding agent MVP.",
+  "style": {
+    "language": "auto",
+    "verbosity": "low",
+    "format": "concise"
+  },
+  "rules": [
+    "Read relevant files before editing existing code.",
+    "Prefer small diffs and verify changes with available tests.",
+    "Ask before destructive actions or commands that may lose data.",
+    "Keep runtime context small; read only files needed for the task."
+  ],
+  "tool_policy": {
+    "read_file": "allow",
+    "search": "allow",
+    "run_command": "ask",
+    "edit_file": "allow",
+    "network": "deny"
+  },
+  "memory": {
+    "user_preferences": [],
+    "project_facts": [],
+    "lessons": []
+  },
+  "growth": {
+    "level": "low",
+    "auto_apply": false,
+    "requires_eval": true,
+    "max_patch_ops": 3,
+    "rollback": true
+  }
+}
