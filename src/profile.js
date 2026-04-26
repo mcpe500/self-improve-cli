@@ -180,6 +180,24 @@ function suggestPatchFromEvent(event) {
       ]
     };
   }
+  if (/run_command|redirection|heredoc|shell|cat >|printf.*>|file creation/.test(lower)) {
+    return {
+      reason: 'Failure indicates shell command misuse for file creation.',
+      patch: [
+        { op: 'add', path: '/rules/-', value: 'For new files, use write_file instead of run_command or shell redirection.' },
+        { op: 'add', path: '/memory/lessons/-', value: `Tool lesson: ${message}` }
+      ]
+    };
+  }
+  if (/max tool turns|stopped after max|repeated tool|loop/.test(lower)) {
+    return {
+      reason: 'Failure indicates repeated tool loop without progress.',
+      patch: [
+        { op: 'add', path: '/rules/-', value: 'If a tool strategy fails twice, switch tools or ask for clarification instead of repeating.' },
+        { op: 'add', path: '/memory/lessons/-', value: `Loop lesson: ${message}` }
+      ]
+    };
+  }
   if (/slow|berat|ram|memory|performance|lambat/.test(lower)) {
     return {
       reason: 'Failure indicates performance or memory pressure.',

@@ -90,6 +90,11 @@ sicli> /key
 sicli> /models
 sicli> /models MiniMax-M2.7-highspeed
 sicli> /models GLM-5.1
+sicli> /permissions
+sicli> /permissions secure
+sicli> /permissions partial_secure
+sicli> /permissions ai_reviewed
+sicli> /permissions auto_approve
 sicli> /config
 ```
 
@@ -109,7 +114,25 @@ Secret storage:
 - `/config` only shows `stored_api_key: true/false`, not the key.
 - Env vars still work as fallback, but are no longer required.
 
-Commands that need approval, such as `run_command`, require interactive approval or `--yes`:
+File creation uses direct `write_file`, so the model should not use shell redirection like `cat > file` or `printf > file`.
+
+Permission modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `secure` | Ask before every tool call. |
+| `partial_secure` | Allow read/search and git-reversible file writes/edits; ask otherwise. Default. |
+| `ai_reviewed` | Clean-context model reviews action tools; asks user if rejected or review fails. Costs extra API calls. |
+| `auto_approve` | Autopilot: allow profile-permitted tools until completion. |
+
+Set mode from CLI:
+
+```bash
+node bin/self-improve-cli.js permissions secure
+node bin/self-improve-cli.js permissions auto_approve
+```
+
+Commands that need approval by current permission mode ask interactively unless `--yes` is set:
 
 ```bash
 node bin/self-improve-cli.js chat --yes "run tests and report result"
@@ -137,6 +160,7 @@ node bin/self-improve-cli.js growth medium --auto-apply true
 node bin/self-improve-cli.js tool read README.md
 node bin/self-improve-cli.js tool search profile .
 node bin/self-improve-cli.js tool run npm test
+node bin/self-improve-cli.js tool write hello.md "# Hello"
 node bin/self-improve-cli.js tool edit README.md old_text new_text
 ```
 

@@ -2,12 +2,14 @@
 
 const readline = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
-const { compileProfilePrompt } = require('./profile');
-const { loadProfiles } = require('./state');
-const { loadConfig, listProviderPresets, connectProvider, modelsForConfig, setModel } = require('./config');
+const { compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('./profile');
+const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay } = require('./state');
+const { loadConfig, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('./config');
 const { chatCompletion } = require('./provider');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secrets');
-const { readFileTool, searchTool, runCommandTool, editFileTool } = require('./tools');
+const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
+const os = require('node:os');
+const path = require('node:path');
 
 const TOOL_SCHEMAS = [
   {
@@ -43,7 +45,7 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: 'Run a command with args using shell=false. Use for tests and checks.',
+      description: 'Run a command with args using shell=false. No shell redirection, pipes, heredocs, glob expansion, or command strings. Use write_file for file creation.',
       parameters: {
         type: 'object',
         properties: {
@@ -51,6 +53,23 @@ const TOOL_SCHEMAS = [
           args: { type: 'array', items: { type: 'string' } }
         },
         required: ['command'],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Create or overwrite a UTF-8 text file directly. Prefer this over shell commands for new files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          content: { type: 'string' },
+          overwrite: { type: 'boolean' }
+        },
+        required: ['path', 'content'],
         additionalProperties: false
       }
     }
@@ -78,6 +97,7 @@ const TOOL_POLICY_KEYS = {
   read_file: 'read_file',
   search: 'search',
   run_command: 'run_command',
+  write_file: 'write_file',
   edit_file: 'edit_file'
 };
 
@@ -87,7 +107,7 @@ function compactJson(value, limit = 12000) {
 }
 
 function systemPrompt(profile) {
-  return `${compileProfilePrompt(profile)}\n\nAgent loop rules:\n- You are self-improve-cli, a lightweight coding agent.\n- Use tool calls when repository facts are needed.\n- Read relevant files before editing existing files.\n- For edits, use edit_file with exact unique old_text.\n- Keep final answers concise and include validation run when possible.\n- Do not claim a command passed unless run_command output proves it.`;
+  return `${compileProfilePrompt(profile)}\n\nWorkspace:\n- cwd=${process.cwd()}\n- platform=${process.platform}\n- os=${os.type()} ${os.release()}\n- path_separator=${require('node:path').sep}\n\nAgent loop rules:\n- You are self-improve-cli, a lightweight coding agent.\n- Use tool calls when repository facts are needed.\n- For new files, use write_file. Do not use run_command for file creation.\n- Read relevant files before editing existing files.\n- For edits, use edit_file with exact unique old_text.\n- run_command uses spawn with shell=false: no redirection, pipes, heredocs, shell builtins, or compound command strings.\n- Keep final answers concise and include validation run when possible.\n- Do not output <think> blocks or hidden reasoning.\n- Do not claim a command passed unless run_command output proves it.`;
 }
 
 function parseToolArgs(toolCall) {
@@ -99,39 +119,120 @@ function parseToolArgs(toolCall) {
   }
 }
 
-async function askApproval(question) {
-  const rl = readline.createInterface({ input, output });
-  try {
+async function askApproval(question, rl) {
+  if (rl) {
     const answer = await rl.question(`${question} [y/N] `);
     return /^y(es)?$/i.test(answer.trim());
+  }
+  const approvalRl = readline.createInterface({ input, output });
+  try {
+    const answer = await approvalRl.question(`${question} [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
   } finally {
-    rl.close();
+    approvalRl.close();
   }
 }
 
-async function ensureAllowed(profile, name, args, options) {
+async function askToolPermission(name, args, options, reason = '') {
+  if (options.yes) return;
+  if (!options.interactive) throw new Error(`Tool requires approval: ${name}. ${reason} Re-run with --yes or use interactive chat.`.trim());
+  const suffix = reason ? ` (${reason})` : '';
+  const ok = await askApproval(`Allow ${name} ${compactJson(args, 500)}${suffix}?`, options.rl);
+  if (!ok) throw new Error(`Tool not approved: ${name}`);
+}
+
+function fileTargetForTool(name, args) {
+  if (name === 'write_file' || name === 'edit_file' || name === 'read_file') return args.path;
+  return '';
+}
+
+async function isGitReversibleFileAction(root, name, args) {
+  const target = fileTargetForTool(name, args);
+  if (!target) return false;
+  const absolute = path.resolve(root, target);
+  let exists = true;
+  try {
+    await require('node:fs/promises').access(absolute);
+  } catch {
+    exists = false;
+  }
+  const inside = await runCommandTool(root, 'git', ['rev-parse', '--is-inside-work-tree']);
+  if (inside.code !== 0) return false;
+  if (!exists && name === 'write_file') return true;
+  const status = await runCommandTool(root, 'git', ['status', '--porcelain', '--', target]);
+  if (status.code !== 0) return false;
+  if (status.stdout.trim()) return false;
+  const tracked = await runCommandTool(root, 'git', ['ls-files', '--error-unmatch', '--', target]);
+  return tracked.code === 0;
+}
+
+async function reviewToolSafety(root, config, name, args) {
+  const prompt = `Review this proposed local coding-agent tool call for safety. Reply only JSON: {"approved": boolean, "reason": string}.\nTool: ${name}\nArgs: ${compactJson(args, 4000)}\nRules:\n- Approve read/search.\n- Approve write/edit only if normal coding task and path looks safe.\n- Reject destructive commands, secret exfiltration, network install scripts, deletion, chmod/chown, rm, format, credential access, or unclear broad changes.\n- For run_command, approve only clearly safe tests/status/read-only commands.`;
+  const reviewer = await chatCompletion(root, config, [
+    { role: 'system', content: 'You are a strict security reviewer. No tools. Return JSON only.' },
+    { role: 'user', content: prompt }
+  ], []);
+  const text = stripThinkBlocks(reviewer.content || '').replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+  try {
+    const parsed = JSON.parse(text);
+    return { approved: Boolean(parsed.approved), reason: String(parsed.reason || '') };
+  } catch {
+    return { approved: false, reason: `reviewer returned non-JSON: ${text.slice(0, 200)}` };
+  }
+}
+
+async function ensureAllowed(root, profile, config, name, args, options) {
   const policyKey = TOOL_POLICY_KEYS[name];
   const policy = profile.tool_policy[policyKey] || 'deny';
-  if (policy === 'allow') return;
   if (policy === 'deny') throw new Error(`Tool denied by profile: ${name}`);
-  if (policy === 'ask') {
-    if (options.yes) return;
-    if (!options.interactive) throw new Error(`Tool requires approval: ${name}. Re-run with --yes or use interactive chat.`);
-    const ok = await askApproval(`Allow ${name} ${compactJson(args, 500)}?`);
-    if (!ok) throw new Error(`Tool not approved: ${name}`);
-    return;
+  if (!['allow', 'ask'].includes(policy)) throw new Error(`Unknown tool policy for ${name}: ${policy}`);
+
+  const mode = config.permission_mode;
+  if (mode === 'auto_approve') return;
+  if (mode === 'secure') return askToolPermission(name, args, options, 'secure mode');
+  if (mode === 'partial_secure') {
+    if (name === 'read_file' || name === 'search') return;
+    if ((name === 'write_file' || name === 'edit_file') && await isGitReversibleFileAction(root, name, args)) return;
+    return askToolPermission(name, args, options, 'not proven git-reversible');
   }
-  throw new Error(`Unknown tool policy for ${name}: ${policy}`);
+  if (mode === 'ai_reviewed') {
+    if (name === 'read_file' || name === 'search') return;
+    let review;
+    try {
+      review = await reviewToolSafety(options.root || process.cwd(), config, name, args);
+    } catch (error) {
+      review = { approved: false, reason: `review failed: ${error.message}` };
+    }
+    if (review.approved) {
+      if (options.interactive) process.stdout.write(`✓ ai_review ${review.reason || 'approved'}\n`);
+      return;
+    }
+    return askToolPermission(name, args, options, `AI review: ${review.reason || 'not approved'}`);
+  }
+  throw new Error(`Unknown permission mode: ${mode}`);
+}
+
+function validateRunCommandArgs(args) {
+  const command = String(args.command || '');
+  const argv = args.args || [];
+  if (!Array.isArray(argv)) throw new Error('run_command args must be array');
+  if (/\s|[|&;<>()$`>]/.test(command)) {
+    throw new Error('run_command command must be executable name only because shell=false. Use args array, or write_file for file creation.');
+  }
 }
 
 async function executeTool(root, profile, toolCall, options) {
   const name = toolCall.function?.name;
   const args = parseToolArgs(toolCall);
-  await ensureAllowed(profile, name, args, options);
+  await ensureAllowed(root, profile, options.config, name, args, options);
   if (options.trace) process.stderr.write(`tool ${name} ${compactJson(args, 800)}\n`);
   if (name === 'read_file') return readFileTool(root, args.path);
   if (name === 'search') return searchTool(root, args.pattern, args.dir || '.');
-  if (name === 'run_command') return runCommandTool(root, args.command, args.args || []);
+  if (name === 'run_command') {
+    validateRunCommandArgs(args);
+    return runCommandTool(root, args.command, args.args || []);
+  }
+  if (name === 'write_file') return writeFileTool(root, args.path, args.content, { overwrite: args.overwrite !== false });
   if (name === 'edit_file') return editFileTool(root, args.path, args.old_text, args.new_text);
   throw new Error(`Unknown tool: ${name || '(missing)'}`);
 }
@@ -140,6 +241,50 @@ function trimHistory(messages, maxHistoryMessages) {
   const system = messages[0];
   const rest = messages.slice(1);
   return [system, ...rest.slice(-maxHistoryMessages)];
+}
+
+function stripThinkBlocks(text) {
+  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+function toolCallName(toolCall) {
+  return toolCall.function?.name || 'unknown_tool';
+}
+
+function summarizeToolResult(result) {
+  if (!result.ok) return result.error;
+  const value = result.result || {};
+  if (value.path) return value.path;
+  if (typeof value.code === 'number' || value.signal || value.error) return `code=${value.code} signal=${value.signal || 'none'}`;
+  if (Array.isArray(value.matches)) return `${value.matches.length} matches`;
+  return 'ok';
+}
+
+function normalizeToolExecution(name, value) {
+  if (name === 'run_command' && (value.error || value.code !== 0)) {
+    const detail = value.error || value.stderr || `command exited with code ${value.code}`;
+    return { ok: false, error: detail, result: value };
+  }
+  return { ok: true, result: value };
+}
+
+async function recordSelfImprove(root, active, event, options = {}) {
+  try {
+    const record = await appendEvent(root, event);
+    const suggestion = suggestPatchFromEvent(record);
+    const gate = evaluatePatch(active, suggestion.patch, { manual: false });
+    const audit = { event: record, patch: suggestion.patch, gate, applied: false };
+    if (gate.allowed && gate.auto) {
+      await applyPatchToOverlay(root, suggestion.patch);
+      audit.applied = true;
+    }
+    await appendPatchAudit(root, audit);
+    if (options.interactive) process.stdout.write(`↻ self-improve ${audit.applied ? 'applied' : 'logged'}: ${suggestion.reason}\n`);
+    return audit;
+  } catch (error) {
+    if (options.interactive) process.stdout.write(`✗ self-improve log failed: ${error.message}\n`);
+    return null;
+  }
 }
 
 async function runAgentTask(root, prompt, options = {}) {
@@ -151,18 +296,30 @@ async function runAgentTask(root, prompt, options = {}) {
     { role: 'user', content: prompt }
   ];
   const maxTurns = options.maxTurns || config.max_tool_turns;
+  let loggedToolFailure = false;
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, config.max_history_messages + 1);
     const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
-    if (!toolCalls.length) return { text: assistant.content || '', messages };
+    if (!toolCalls.length) return { text: stripThinkBlocks(assistant.content), messages };
     for (const toolCall of toolCalls) {
       let result;
+      const name = toolCallName(toolCall);
       try {
-        result = { ok: true, result: await executeTool(root, active, toolCall, options) };
+        result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config }));
       } catch (error) {
         result = { ok: false, error: error.message };
+      }
+      if (options.interactive) {
+        process.stdout.write(`${result.ok ? '✓' : '✗'} ${name} ${summarizeToolResult(result)}\n`);
+      }
+      if (!result.ok && !loggedToolFailure) {
+        loggedToolFailure = true;
+        await recordSelfImprove(root, active, {
+          type: 'tool_failure',
+          message: `${name} failed during prompt "${prompt}": ${result.error}`
+        }, options);
       }
       messages.push({
         role: 'tool',
@@ -171,7 +328,11 @@ async function runAgentTask(root, prompt, options = {}) {
       });
     }
   }
-  return { text: `Stopped after max tool turns (${maxTurns}).`, messages };
+  await recordSelfImprove(root, active, {
+    type: 'max_tool_turns',
+    message: `Stopped after max tool turns (${maxTurns}) for prompt "${prompt}"`
+  }, options);
+  return { text: `Stopped after max tool turns (${maxTurns}). Self-improve logged this failure.`, messages };
 }
 
 async function printProviderHelp(root, config) {
@@ -287,12 +448,25 @@ async function handleModelsCommand(root, arg, rl) {
   return true;
 }
 
+async function handlePermissionsCommand(root, arg) {
+  if (!arg) {
+    const config = await loadConfig(root);
+    process.stdout.write(`Permission mode: ${config.permission_mode}\n`);
+    process.stdout.write('Modes:\n');
+    for (const mode of listPermissionModes()) process.stdout.write(`  ${mode.id} - ${mode.label}\n`);
+    return true;
+  }
+  const config = await setPermissionMode(root, arg);
+  process.stdout.write(`Permission mode: ${config.permission_mode}\n`);
+  return true;
+}
+
 async function handleSlashCommand(root, prompt, rl) {
   const [command, ...parts] = prompt.split(/\s+/);
   const arg = parts.join(' ').trim();
   if (command === '/exit' || command === '/quit') return false;
   if (command === '/help') {
-    process.stdout.write('Commands: /connect [provider], /key, /models [model], /config, /help, /exit\n');
+    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /config, /help, /exit\n');
     return true;
   }
   if (command === '/config') {
@@ -307,6 +481,7 @@ async function handleSlashCommand(root, prompt, rl) {
   }
   if (command === '/connect') return handleConnectCommand(root, arg, rl);
   if (command === '/models') return handleModelsCommand(root, arg, rl);
+  if (command === '/permissions') return handlePermissionsCommand(root, arg);
   process.stdout.write(`Unknown command: ${command}. Use /help.\n`);
   return true;
 }
@@ -335,7 +510,7 @@ async function startChat(root, options = {}) {
         continue;
       }
       try {
-        const result = await runAgentTask(root, prompt, { ...options, interactive: true, history });
+        const result = await runAgentTask(root, prompt, { ...options, interactive: true, history, rl });
         process.stdout.write(`${result.text}\n`);
         history.splice(0, history.length, ...result.messages.filter((m) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls)).slice(-10));
       } catch (error) {
@@ -352,5 +527,7 @@ module.exports = {
   systemPrompt,
   runAgentTask,
   handleSlashCommand,
+  isGitReversibleFileAction,
+  stripThinkBlocks,
   startChat
 };

@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {
   deepMerge,
   validateProfile,
@@ -9,6 +12,7 @@ const {
   evaluatePatch,
   suggestPatchFromEvent
 } = require('../src/profile');
+const { initWorkspace, loadProfiles, statePath } = require('../src/state');
 
 test('deepMerge appends overlay arrays for rules and memory', () => {
   const merged = deepMerge(
@@ -34,6 +38,17 @@ test('applyJsonPatch creates missing array parents for add', () => {
     { op: 'add', path: '/memory/lessons/-', value: 'learned' }
   ]);
   assert.deepEqual(next, { memory: { lessons: ['learned'] } });
+});
+
+test('loadProfiles backfills new default tool policies for old base profiles', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sicli-profile-'));
+  await initWorkspace(root);
+  const basePath = statePath(root, 'base.profile.json');
+  const base = JSON.parse(await fs.readFile(basePath, 'utf8'));
+  delete base.tool_policy.write_file;
+  await fs.writeFile(basePath, `${JSON.stringify(base, null, 2)}\n`, 'utf8');
+  const { active } = await loadProfiles(root);
+  assert.equal(active.tool_policy.write_file, 'allow');
 });
 
 test('growth none forbids mutation', () => {

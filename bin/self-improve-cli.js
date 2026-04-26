@@ -4,8 +4,8 @@
 const fs = require('node:fs/promises');
 const { GROWTH_LEVELS, compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('../src/profile');
 const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getStatus } = require('../src/state');
-const { readFileTool, searchTool, runCommandTool, editFileTool } = require('../src/tools');
-const { loadConfig, setConfigValue } = require('../src/config');
+const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('../src/tools');
+const { loadConfig, setConfigValue, listPermissionModes, setPermissionMode } = require('../src/config');
 const { runAgentTask, startChat } = require('../src/agent');
 
 function usage() {
@@ -17,6 +17,7 @@ Usage:
   sicli config show
   sicli config get <key>
   sicli config set <key> <value>
+  sicli permissions [secure|partial_secure|ai_reviewed|auto_approve]
   sicli init
   sicli status
   sicli profile [--json|--prompt]
@@ -27,6 +28,7 @@ Usage:
   sicli tool read <file>
   sicli tool search <text> [dir]
   sicli tool run <cmd> [args...]
+  sicli tool write <file> <content>
   sicli tool edit <file> <old_text> <new_text>
 
 Notes:
@@ -132,6 +134,18 @@ async function main() {
     return;
   }
 
+  if (command === 'permissions') {
+    const mode = rest[0];
+    if (!mode) {
+      const config = await loadConfig(root);
+      printJson({ current: config.permission_mode, modes: listPermissionModes() });
+      return;
+    }
+    const config = await setPermissionMode(root, mode);
+    printJson({ ok: true, permission_mode: config.permission_mode });
+    return;
+  }
+
   if (command === 'profile') {
     const { active } = await loadProfiles(root);
     if (flags.prompt) process.stdout.write(`${compileProfilePrompt(active)}\n`);
@@ -192,6 +206,10 @@ async function main() {
     }
     if (tool === 'run') {
       printJson(await runCommandTool(root, toolArgs[0], toolArgs.slice(1)));
+      return;
+    }
+    if (tool === 'write') {
+      printJson(await writeFileTool(root, toolArgs[0], toolArgs.slice(1).join(' ')));
       return;
     }
     if (tool === 'edit') {

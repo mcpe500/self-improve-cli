@@ -5,6 +5,7 @@ const path = require('node:path');
 const { statePath, initWorkspace } = require('./state');
 
 const CONFIG_FILE = 'config.json';
+const PERMISSION_MODES = new Set(['secure', 'partial_secure', 'ai_reviewed', 'auto_approve']);
 
 const PROVIDER_PRESETS = {
   openai: {
@@ -42,6 +43,7 @@ function defaultConfig(env = process.env) {
     base_url: env.SICLI_BASE_URL || env.OPENAI_BASE_URL || preset.base_url,
     api_key_env: env.SICLI_API_KEY_ENV || preset.api_key_env,
     model: env.SICLI_MODEL || preset.models[0],
+    permission_mode: env.SICLI_PERMISSION_MODE || 'partial_secure',
     temperature: 0.2,
     max_tool_turns: 8,
     max_history_messages: 20
@@ -75,6 +77,7 @@ function normalizeConfig(config) {
   if (typeof merged.base_url !== 'string' || !merged.base_url) throw new Error('config.base_url must be non-empty string');
   if (typeof merged.api_key_env !== 'string' || !merged.api_key_env) throw new Error('config.api_key_env must be non-empty string');
   if (typeof merged.model !== 'string' || !merged.model) throw new Error('config.model must be non-empty string');
+  if (!PERMISSION_MODES.has(merged.permission_mode)) throw new Error(`config.permission_mode must be one of ${Array.from(PERMISSION_MODES).join(', ')}`);
   if (typeof merged.temperature !== 'number') throw new Error('config.temperature must be number');
   if (!Number.isInteger(merged.max_tool_turns) || merged.max_tool_turns < 1) throw new Error('config.max_tool_turns must be positive integer');
   if (!Number.isInteger(merged.max_history_messages) || merged.max_history_messages < 1) throw new Error('config.max_history_messages must be positive integer');
@@ -154,14 +157,32 @@ async function setModel(root, model) {
   return saveConfig(root, { ...config, model });
 }
 
+function listPermissionModes() {
+  return [
+    { id: 'secure', label: 'Secure: ask before every tool call' },
+    { id: 'partial_secure', label: 'Partial secure: allow read/search and git-reversible file actions; ask otherwise' },
+    { id: 'ai_reviewed', label: 'AI reviewed: reviewer model approves action tools; ask on deny/error' },
+    { id: 'auto_approve', label: 'Auto approve: allow all profile-permitted tools' }
+  ];
+}
+
+async function setPermissionMode(root, mode) {
+  if (!PERMISSION_MODES.has(mode)) throw new Error(`permission mode must be one of ${Array.from(PERMISSION_MODES).join(', ')}`);
+  const config = await loadConfig(root);
+  return saveConfig(root, { ...config, permission_mode: mode });
+}
+
 module.exports = {
   CONFIG_FILE,
+  PERMISSION_MODES,
   PROVIDER_PRESETS,
   defaultConfig,
   normalizeConfig,
   loadConfig,
   saveConfig,
   setConfigValue,
+  listPermissionModes,
+  setPermissionMode,
   listProviderPresets,
   findProviderPreset,
   connectProvider,

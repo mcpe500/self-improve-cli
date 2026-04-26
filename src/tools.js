@@ -45,6 +45,26 @@ async function* walk(root, dir, options = {}) {
   }
 }
 
+async function writeFileTool(root, target, content, { overwrite = true } = {}) {
+  if (!target) throw new Error('write_file path required');
+  if (typeof content !== 'string') throw new Error('write_file content must be string');
+  const file = resolveInside(root, target);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  if (!overwrite) {
+    try {
+      await fs.access(file);
+      throw new Error('file exists and overwrite is false');
+    } catch (error) {
+      if (error.message === 'file exists and overwrite is false') throw error;
+    }
+  }
+  await fs.writeFile(file, content, 'utf8');
+  return {
+    path: path.relative(root, file) || '.',
+    bytes: Buffer.byteLength(content)
+  };
+}
+
 async function editFileTool(root, target, oldText, newText) {
   if (!target) throw new Error('edit_file path required');
   if (typeof oldText !== 'string' || oldText.length === 0) throw new Error('edit_file old_text required');
@@ -120,6 +140,7 @@ function runCommandTool(root, command, args = [], { timeoutMs = 120000 } = {}) {
 
 module.exports = {
   readFileTool,
+  writeFileTool,
   editFileTool,
   searchTool,
   runCommandTool,

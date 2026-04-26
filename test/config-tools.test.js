@@ -5,10 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { loadConfig, setConfigValue, normalizeConfig, listProviderPresets, connectProvider, modelsForConfig, setModel } = require('../src/config');
-const { editFileTool } = require('../src/tools');
+const { loadConfig, setConfigValue, normalizeConfig, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('../src/config');
+const { writeFileTool, editFileTool } = require('../src/tools');
 const { joinUrl, apiKeyFromConfig } = require('../src/provider');
 const { setProviderApiKey, getProviderApiKey, secretStatus } = require('../src/secrets');
+const { isGitReversibleFileAction, stripThinkBlocks } = require('../src/agent');
 
 test('loadConfig creates default config without secret value', async () => {
   const root = await tempRoot();
@@ -69,6 +70,17 @@ test('apiKeyFromConfig falls back to configured env var', async () => {
   assert.equal(await apiKeyFromConfig(root, config, { ZAI_API_KEY: 'env-key' }), 'env-key');
 });
 
+test('permission modes are listed, validated, and persisted', async () => {
+  const root = await tempRoot();
+  assert.equal(listPermissionModes().length, 4);
+  let config = await loadConfig(root);
+  assert.equal(config.permission_mode, 'partial_secure');
+  config = await setPermissionMode(root, 'secure');
+  assert.equal(config.permission_mode, 'secure');
+  assert.throws(() => normalizeConfig({ permission_mode: 'bad' }), /permission_mode/);
+  await assert.rejects(() => setPermissionMode(root, 'bad'), /permission mode/);
+});
+
 test('setConfigValue persists typed config values', async () => {
   const root = await tempRoot();
   await setConfigValue(root, 'model', 'test-model');
@@ -84,6 +96,31 @@ test('normalizeConfig rejects invalid max_tool_turns', () => {
 
 test('joinUrl handles slashes', () => {
   assert.equal(joinUrl('https://example.test/v1/', '/chat/completions'), 'https://example.test/v1/chat/completions');
+});
+
+test('writeFileTool creates text file and blocks path escape', async () => {
+  const root = await tempRoot();
+  const result = await writeFileTool(root, 'hello.md', '# Hello\n');
+  assert.equal(result.path, 'hello.md');
+  assert.equal(await fs.readFile(path.join(root, 'hello.md'), 'utf8'), '# Hello\n');
+  await assert.rejects(() => writeFileTool(root, '../escape.md', 'x'), /escapes workspace/);
+});
+
+test('writeFileTool respects overwrite false', async () => {
+  const root = await tempRoot();
+  await writeFileTool(root, 'hello.md', 'first');
+  await assert.rejects(() => writeFileTool(root, 'hello.md', 'second', { overwrite: false }), /overwrite is false/);
+});
+
+test('git reversibility allows new write in git repo and rejects non-git', async () => {
+  const root = await tempRoot();
+  assert.equal(await isGitReversibleFileAction(root, 'write_file', { path: 'new.md' }), false);
+  await run('git', ['init'], root);
+  assert.equal(await isGitReversibleFileAction(root, 'write_file', { path: 'new.md' }), true);
+});
+
+test('stripThinkBlocks removes model reasoning blocks', () => {
+  assert.equal(stripThinkBlocks('<think>hidden</think>\nHello!'), 'Hello!');
 });
 
 test('editFileTool replaces exact unique text', async () => {
@@ -102,4 +139,13 @@ test('editFileTool rejects duplicate old_text', async () => {
 
 async function tempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'sicli-test-'));
+}
+
+function run(command, args, cwd) {
+  const { spawn } = require('node:child_process');
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, shell: false, stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
+  });
 }

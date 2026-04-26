@@ -57,3 +57,23 @@ Created and implemented `spec/004.local-secret-storage.md`. Added `.selfimprove/
 ## [2026-04-26] handoff | Local secret storage
 
 Wrote `spec/handoff/004.local-secret-storage.md` with validation results, graph blocker, open questions, and next steps.
+
+## [2026-04-26] spec | Tool approval and file write fixes
+
+Created and implemented `spec/005.tool-approval-and-file-write-fixes.md`. Fixed duplicate approval echo by reusing readline, added `write_file`, tool feedback, shell=false command validation, `<think>` stripping, OS/cwd prompt context, and chat self-improve logging for tool failures/max-turn stops.
+
+## [2026-04-26] handoff | Tool approval and file write fixes
+
+Wrote `spec/handoff/005.tool-approval-and-file-write-fixes.md` with validation results, graph blocker, open questions, and next steps.
+
+## [2026-04-26] spec | Permission modes
+
+Created and implemented `spec/006.permission-modes.md`. Added config `permission_mode`, CLI `permissions`, chat `/permissions`, secure/partial_secure/ai_reviewed/auto_approve behavior, git reversibility checks, and clean-context AI tool review.
+
+## [2026-04-26] handoff | Permission modes
+
+Wrote `spec/handoff/006.permission-modes.md` with validation results, graph blocker, open questions, and next steps.
+
+## [2026-04-26] fix | AI-reviewed permission semantics
+
+Fixed `ai_reviewed` mode so profile-`ask` tools go through clean-context AI review instead of immediate user approval. Added default-profile backfill so old `.selfimprove/base.profile.json` files gain new default tool policies such as `write_file` without rewriting base.

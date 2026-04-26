@@ -24,7 +24,8 @@ last_updated: 2026-04-26
 
 - `read_file`: capped UTF-8 file read.
 - `search`: literal workspace search, skipping heavy directories.
-- `run_command`: `spawn` with `shell: false`.
+- `run_command`: `spawn` with `shell: false`; no shell redirection/pipes/heredocs.
+- `write_file`: direct UTF-8 file creation/overwrite.
 - `edit_file`: exact unique text replacement.
 
 ## Provider Presets
@@ -40,6 +41,11 @@ last_updated: 2026-04-26
 - `/config` redacts secrets and shows only `stored_api_key`.
 - No dependency added.
 - No TUI, watcher, indexer, LSP, or embeddings.
+- Chat and tool approvals share one readline instance to avoid duplicate echo.
+- Tool failures and max-turn stops are logged into `.selfimprove/events.jsonl` and `.selfimprove/patches.jsonl` for self-improvement.
+- Permission modes: `secure`, `partial_secure`, `ai_reviewed`, `auto_approve`.
+- `partial_secure` allows only read/search and git-reversible file writes/edits without asking.
+- `ai_reviewed` uses a clean-context reviewer call for action tools and asks user on denial/error.
 
 ## Related
 

@@ -65,10 +65,26 @@ async function initWorkspace(root = process.cwd()) {
   return dir;
 }
 
+function applyDefaults(value, defaults) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value) && defaults && typeof defaults === 'object' && !Array.isArray(defaults)) {
+    const next = { ...value };
+    for (const [key, defaultValue] of Object.entries(defaults)) {
+      if (next[key] === undefined) next[key] = defaultValue;
+      else next[key] = applyDefaults(next[key], defaultValue);
+    }
+    return next;
+  }
+  return value === undefined ? defaults : value;
+}
+
 async function loadProfiles(root = process.cwd()) {
   await initWorkspace(root);
-  const base = await readJson(statePath(root, BASE_PROFILE));
+  const defaultProfilePath = path.resolve(__dirname, '..', 'profiles', 'default.profile.json');
+  const defaults = await readJson(defaultProfilePath);
+  const baseRaw = await readJson(statePath(root, BASE_PROFILE));
   const overlay = await readJson(statePath(root, OVERLAY_PROFILE), {});
+  const base = applyDefaults(baseRaw, defaults);
   validateProfile(base, 'base profile');
   const active = deepMerge(base, overlay);
   validateProfile(active, 'active profile');
