@@ -168,12 +168,12 @@ async function isGitReversibleFileAction(root, name, args) {
   return tracked.code === 0;
 }
 
-async function reviewToolSafety(root, config, name, args) {
+async function reviewToolSafety(root, config, name, args, signal) {
   const prompt = `Review this proposed local coding-agent tool call for safety. Reply only JSON: {"approved": boolean, "reason": string}.\nTool: ${name}\nArgs: ${compactJson(args, 4000)}\nRules:\n- Approve read/search.\n- Approve write/edit only if normal coding task and path looks safe.\n- Reject destructive commands, secret exfiltration, network install scripts, deletion, chmod/chown, rm, format, credential access, or unclear broad changes.\n- For run_command, approve only clearly safe tests/status/read-only commands.`;
   const reviewer = await chatCompletion(root, config, [
     { role: 'system', content: 'You are a strict security reviewer. No tools. Return JSON only.' },
     { role: 'user', content: prompt }
-  ], []);
+  ], [], signal);
   const text = stripThinkBlocks(reviewer.content || '').replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
   try {
     const parsed = JSON.parse(text);
@@ -201,7 +201,7 @@ async function ensureAllowed(root, profile, config, name, args, options) {
     if (name === 'read_file' || name === 'search') return;
     let review;
     try {
-      review = await reviewToolSafety(options.root || process.cwd(), config, name, args);
+      review = await reviewToolSafety(options.root || process.cwd(), config, name, args, options.signal);
     } catch (error) {
       review = { approved: false, reason: `review failed: ${error.message}` };
     }

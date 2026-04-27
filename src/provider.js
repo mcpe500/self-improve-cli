@@ -6,6 +6,14 @@ function joinUrl(baseUrl, suffix) {
   return `${baseUrl.replace(/\/+$/, '')}/${suffix.replace(/^\/+/, '')}`;
 }
 
+function anySignal(...signals) {
+  const controller = new AbortController();
+  for (const s of signals) {
+    if (s) s.addEventListener('abort', () => controller.abort());
+  }
+  return controller.signal;
+}
+
 async function apiKeyFromConfig(root, config, env = process.env) {
   const stored = await getProviderApiKey(root, config.provider_id);
   if (stored) return stored;
@@ -16,8 +24,12 @@ async function apiKeyFromConfig(root, config, env = process.env) {
 
 async function chatCompletion(root, config, messages, tools = [], signal) {
   if (config.provider !== 'openai-compatible') throw new Error(`Unsupported provider: ${config.provider}`);
+  const timeoutMs = (config.timeout_ms) || 30000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const combinedSignal = signal ? anySignal(signal, controller.signal) : controller.signal;
   const response = await fetch(joinUrl(config.base_url, 'chat/completions'), {
-    signal,
+    signal: combinedSignal,
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -31,6 +43,7 @@ async function chatCompletion(root, config, messages, tools = [], signal) {
       tool_choice: tools.length ? 'auto' : undefined
     })
   });
+  clearTimeout(timeout);
   const text = await response.text();
   let body;
   try {
