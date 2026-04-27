@@ -11,6 +11,8 @@ const EVENTS_LOG = 'events.jsonl';
 const PATCHES_LOG = 'patches.jsonl';
 const TRACES_LOG = 'traces.jsonl';
 const OPTIMIZER_STATE = 'optimizer.json';
+const DAEMON_STATE = 'daemon.json';
+const DAEMON_PID = 'daemon.pid';
 
 function statePath(root, file = '') {
   return path.join(root, STATE_DIR, file);
@@ -270,6 +272,113 @@ async function getStatus(root = process.cwd()) {
   };
 }
 
+
+
+async function nextCandidateId(root) {
+  const dir = path.join(root, '.selfimprove', 'candidates');
+  await fs.mkdir(dir, { recursive: true });
+  const entries = await fs.readdir(dir).catch(() => []);
+  const nums = entries
+    .filter(n => /^\d+$/.test(n))
+    .map(n => parseInt(n, 10))
+    .filter(n => !isNaN(n));
+  return nums.length === 0 ? 1 : Math.max(...nums) + 1;
+}
+
+async function writeCandidateHarness(root, id, harness) {
+  const dir = path.join(root, '.selfimprove', 'candidates', String(id));
+  await fs.mkdir(dir, { recursive: true });
+  const fp = path.join(dir, 'harness.json');
+  await fs.writeFile(fp, JSON.stringify(harness, null, 2), 'utf8');
+  return fp;
+}
+
+async function writeCandidateScores(root, id, scores) {
+  const dir = path.join(root, '.selfimprove', 'candidates', String(id));
+  await fs.mkdir(dir, { recursive: true });
+  const fp = path.join(dir, 'scores.json');
+  await fs.writeFile(fp, JSON.stringify(scores, null, 2), 'utf8');
+  return fp;
+}
+
+async function promoteCandidate(root, id) {
+  const candDir = path.join(root, '.selfimprove', 'candidates', String(id));
+  const harnessPath = path.join(candDir, 'harness.json');
+  const overlayPath = path.join(root, '.selfimprove', 'overlay.profile.json');
+  const harness = JSON.parse(await fs.readFile(harnessPath, 'utf8'));
+  await fs.writeFile(overlayPath, JSON.stringify(harness, null, 2), 'utf8');
+  return overlayPath;
+}
+
+async function loadCandidateScores(root, id) {
+  const fp = path.join(root, '.selfimprove', 'candidates', String(id), 'scores.json');
+  return JSON.parse(await fs.readFile(fp, 'utf8'));
+}
+
+async function listCandidates(root) {
+  const dir = path.join(root, '.selfimprove', 'candidates');
+  await fs.mkdir(dir, { recursive: true });
+  const entries = await fs.readdir(dir).catch(() => []);
+  return entries.filter(n => /^\d+$/.test(n)).map(n => parseInt(n, 10)).sort((a, b) => a - b);
+}
+
+async function readDaemonState(root) {
+  const fp = statePath(root, DAEMON_STATE);
+  return readJson(fp, null);
+}
+
+async function writeDaemonState(root, state) {
+  const fp = statePath(root, DAEMON_STATE);
+  await writeJson(fp, state);
+}
+
+async function writeDaemonPid(root, pid) {
+  const fp = statePath(root, DAEMON_PID);
+  await fs.writeFile(fp, String(pid), 'utf8');
+}
+
+async function readDaemonPid(root) {
+  const fp = statePath(root, DAEMON_PID);
+  try {
+    const content = await fs.readFile(fp, 'utf8');
+    return parseInt(content.trim(), 10);
+  } catch {
+    return null;
+  }
+}
+
+async function clearDaemonPid(root) {
+  const fp = statePath(root, DAEMON_PID);
+  try {
+    await fs.unlink(fp);
+  } catch {}
+}
+
+async function getTraceCount(root) {
+  const fp = statePath(root, TRACES_LOG);
+  return countJsonLines(fp);
+}
+
+async function isDaemonRunning(root) {
+  const pid = await readDaemonPid(root);
+  if (!pid) return false;
+  if (process.platform === 'win32') {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  } else {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 module.exports = {
   STATE_DIR,
   statePath,
@@ -289,5 +398,18 @@ module.exports = {
   getStatus,
   rollbackToBackup,
   rollbackToBackupFromNumber,
-  recordFailedPatch
+  recordFailedPatch,
+  nextCandidateId,
+  writeCandidateHarness,
+  writeCandidateScores,
+  promoteCandidate,
+  loadCandidateScores,
+  listCandidates,
+  readDaemonState,
+  writeDaemonState,
+  writeDaemonPid,
+  readDaemonPid,
+  clearDaemonPid,
+  getTraceCount,
+  isDaemonRunning
 };
