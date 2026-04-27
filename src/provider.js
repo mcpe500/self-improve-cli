@@ -44,7 +44,7 @@ async function chatCompletion(root, config, messages, tools = [], signal) {
   }
   const message = body.choices?.[0]?.message;
   if (!message) throw new Error('Provider response missing choices[0].message');
-  return message;
+  return { message, usage: body.usage || null };
 }
 
 module.exports = {

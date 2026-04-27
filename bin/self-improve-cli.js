@@ -2,6 +2,8 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const path = require('path');
+const { spawn } = require('child_process');
 const { GROWTH_LEVELS, compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('../src/profile');
 const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus, getStatus } = require('../src/state');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('../src/tools');
@@ -86,6 +88,16 @@ async function maybeApplyPatch(root, active, patch, event, manual) {
   }
   await appendPatchAudit(root, audit);
   return audit;
+}
+
+function computeHarnessDiff(base, candidate) {
+  const patches = [];
+  for (const key of Object.keys(candidate)) {
+    if (JSON.stringify(base[key]) !== JSON.stringify(candidate[key])) {
+      patches.push({ op: 'replace', path: `/${key}`, value: candidate[key] });
+    }
+  }
+  return patches;
 }
 
 async function main() {
@@ -177,6 +189,28 @@ async function main() {
       if (!flags.quiet) printJson(result);
       return;
     }
+    if (action === 'sandbox-eval') {
+      const { sandboxEvaluateCandidate } = await import('../src/self-improve.js');
+      const { loadProfiles } = await import('../src/state.js');
+      
+      const candidateId = parseInt(rest[0], 10);
+      const poolSize = parseInt(rest.find(a => a.startsWith('--workers='))?.split('=')[1] || '4', 10);
+      
+      let patch;
+      if (!isNaN(candidateId)) {
+        const { readFileSync } = require('node:fs');
+        const path = require('node:path');
+        const harnessPath = path.join(root, '.selfimprove', 'candidates', String(candidateId), 'harness.json');
+        const harness = JSON.parse(readFileSync(harnessPath, 'utf8'));
+        const { base, overlay } = await loadProfiles(root);
+        const baseOverlay = { ...base, ...overlay };
+        patch = computeHarnessDiff(baseOverlay, harness);
+      }
+      
+      const result = await sandboxEvaluateCandidate(root, patch || [], { poolSize });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
     if (action === 'propose') {
       const result = await runSelfImprovePropose(root, {
         dryRun: Boolean(flags['dry-run']),
@@ -195,6 +229,14 @@ async function main() {
       printJson({ candidates: dirs, count: dirs.length });
       return;
     }
+    if (action === 'promote') {
+      const id = parseInt(rest[0], 10);
+      if (isNaN(id)) { console.error('Usage: self-improve promote <id>'); process.exit(1); }
+      const { promoteCandidate } = await import('../src/self-improve.js');
+      const result = await promoteCandidate(root, id);
+      console.log('Promoted candidate', id, '->', result);
+      return;
+    }
     if (action === 'rollback') {
       const n = parseInt(rest[0] || '0', 10);
       const { rollbackToBackupFromNumber } = require('../src/state');
@@ -206,18 +248,112 @@ async function main() {
       printJson(await runBenchmark(root));
       return;
     }
-    throw new Error(`unknown self-improve action: ${action}`);
-  }
-
-  if (command === 'permissions') {
-    const mode = rest[0];
-    if (!mode) {
-      const config = await loadConfig(root);
-      printJson({ current: config.permission_mode, modes: listPermissionModes() });
+    if (action === 'pareto') {
+      const { evaluateParetoFrontier } = await import('../src/self-improve.js');
+      const frontier = await evaluateParetoFrontier(root);
+      console.log(JSON.stringify(frontier, null, 2));
       return;
     }
-    const config = await setPermissionMode(root, mode);
-    printJson({ ok: true, permission_mode: config.permission_mode });
+throw new Error(`unknown self-improve action: ${action}`);
+  }
+
+  if (command === 'daemon') {
+    const daemonCmd = rest[0];
+    const { runDaemonLoop, gracefulShutdown, isDaemonRunning, readDaemonPid, clearDaemonPid } = await import('../src/daemon.js');
+
+    if (daemonCmd === 'start') {
+      const running = await isDaemonRunning(root);
+      if (running) {
+        const pid = await readDaemonPid(root);
+        console.log('Daemon already running with PID:', pid);
+        process.exit(1);
+      }
+
+      const intervalMin = parseInt(args.find(a => a.startsWith('--interval='))?.split('=')[1] || '15', 10);
+      const port = parseInt(args.find(a => a.startsWith('--port='))?.split('=')[1] || '3847', 10);
+      const noAuto = args.includes('--no-auto-promote');
+
+      const bin = path.join(__dirname, 'self-improve-cli.js');
+      const child = spawn(process.execPath, [bin, 'daemon', 'run', `--interval=${intervalMin}`, `--port=${port}`, noAuto ? '--no-auto-promote' : ''], {
+        cwd: root,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      child.unref();
+
+      const { writeDaemonPid } = await import('../src/state.js');
+      await writeDaemonPid(root, child.pid);
+
+      console.log(`Daemon started (PID: ${child.pid}, interval: ${intervalMin}min, port: ${port})`);
+      console.log('Use "self-improve daemon status" to monitor');
+    }
+
+    else if (daemonCmd === 'run') {
+      const intervalMin = parseInt(args.find(a => a.startsWith('--interval='))?.split('=')[1] || '15', 10);
+      const port = parseInt(args.find(a => a.startsWith('--port='))?.split('=')[1] || '3847', 10);
+      const autoPromote = !args.includes('--no-auto-promote');
+
+      await runDaemonLoop(root, { intervalMinutes: intervalMin, port, autoPromote });
+    }
+
+    else if (daemonCmd === 'stop') {
+      const running = await isDaemonRunning(root);
+      if (!running) {
+        console.log('Daemon not running');
+        process.exit(1);
+      }
+      const { readDaemonState } = await import('../src/state.js');
+      try {
+        const http = require('http');
+        const state = await readDaemonState(root);
+        await new Promise(resolve => {
+          const req = http.request({
+            hostname: '127.0.0.1',
+            port: state.port || 3847,
+            path: '/stop',
+            method: 'POST'
+          }, () => resolve());
+          req.on('error', () => resolve());
+          req.end();
+        });
+        console.log('Stop signal sent');
+      } catch {}
+
+      await new Promise(r => setTimeout(r, 2000));
+      console.log('Daemon stopped');
+    }
+
+    else if (daemonCmd === 'status') {
+      const running = await isDaemonRunning(root);
+      if (!running) {
+        console.log('Daemon: not running');
+        process.exit(1);
+      }
+      const pid = await readDaemonPid(root);
+      const { readDaemonState } = await import('../src/state.js');
+      const state = await readDaemonState(root);
+      console.log(JSON.stringify({ running: true, pid, ...state }, null, 2));
+    }
+
+    else if (daemonCmd === 'logs') {
+      const { statePath } = await import('../src/state.js');
+      const logPath = path.join(root, '.selfimprove', 'daemon.log');
+      const lines = args.find(a => a.startsWith('--tail='))?.split('=')[1] || 50;
+      try {
+        const content = await fs.readFile(logPath, 'utf8');
+        const allLines = content.split('\n').filter(Boolean);
+        const lastLines = allLines.slice(-parseInt(lines, 10));
+        console.log(lastLines.join('\n'));
+      } catch {
+        console.log('No daemon log found');
+      }
+    }
+
+    else {
+      console.log('Usage: self-improve daemon start|stop|status|logs');
+      process.exit(1);
+    }
     return;
   }
 

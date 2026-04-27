@@ -22,20 +22,139 @@ const {
 
 const DEMO_MESSAGE = 'agent used run_command shell redirection for file creation';
 
-async function sandboxEvaluateCandidate(root, patch) {
+async function sandboxEvaluateCandidate(root, patch, options = {}) {
+  const { poolSize = 4, timeoutMs = 120000 } = options;
+
+  const { applyJsonPatch } = await import('./profile.js');
+  const { loadProfiles } = await import('./state.js');
   const { base, overlay } = await loadProfiles(root);
+  const patchedOverlay = applyJsonPatch(overlay, patch);
+  const candidateActive = { ...base, ...patchedOverlay };
+
+  const benchmarkTasks = await loadBenchmarkTasks(root);
+
+  const failureTraces = await loadFailureTraces(root);
+
+  const allTasks = [
+    ...benchmarkTasks.map(t => ({ type: 'synthetic', ...t })),
+    ...failureTraces.map(t => ({ type: 'trace', ...t }))
+  ];
+
+  const { WorkerPool } = await import('./sandbox/worker_pool.js');
+  const pool = new WorkerPool({ poolSize });
+  let results;
   try {
-    const candidateOverlay = applyJsonPatch(overlay, patch);
-    const candidateActive = deepMerge(base, candidateOverlay);
-    validateProfile(candidateActive, 'candidate harness');
-    const gate = evaluatePatch(candidateActive, patch, { manual: true });
-    if (!gate.allowed) {
-      return { passed: false, reason: 'patch blocked by growth gate: ' + gate.reason };
-    }
-    return { passed: true, reason: 'sandbox validation passed' };
+    results = await pool.runWithTimeout(allTasks, candidateActive, timeoutMs);
   } catch (err) {
-    return { passed: false, reason: 'sandbox validation failed: ' + err.message };
+    return { passed: false, reason: `sandbox_timeout: ${err.message}`, failure_rate: 1.0 };
   }
+
+  const passed = results.filter(r => r.passed).length;
+  const failed = results.length - passed;
+  const failure_rate = failed / results.length;
+
+  const { validateProfile } = await import('./profile.js');
+  const validation = validateProfile(candidateActive, 'candidate harness');
+  if (!validation.valid) {
+    return { passed: false, reason: `structural_invalid: ${validation.error}`, failure_rate: 1.0 };
+  }
+
+  const baseline_rate = 0.5;
+  const passed_growth_gate = failure_rate < baseline_rate;
+
+  return {
+    passed: passed_growth_gate,
+    reason: passed_growth_gate
+      ? `failure_rate=${failure_rate.toFixed(3)} < ${baseline_rate}`
+      : `failure_rate=${failure_rate.toFixed(3)} >= ${baseline_rate}`,
+    failure_rate,
+    total_tasks: results.length,
+    passed_tasks: passed,
+    tokens_used: results.reduce((sum, r) => sum + (r.tokens || 0), 0),
+    duration_ms: results.reduce((sum, r) => sum + (r.duration_ms || 0), 0)
+  };
+}
+
+async function loadBenchmarkTasks(root) {
+  const fs = require('fs');
+  const benchmarkDir = path.join(root, 'meta-harness', 'experiments', 'benchmark_tasks');
+  const tasks = [];
+  for (let i = 1; i <= 10; i++) {
+    const fp = path.join(benchmarkDir, `task_${String(i).padStart(3, '0')}.json`);
+    try {
+      const content = await fs.promises.readFile(fp, 'utf8');
+      tasks.push({ id: `task_${i}`, ...JSON.parse(content) });
+    } catch {}
+  }
+  return tasks;
+}
+
+async function loadFailureTraces(root) {
+  const { readRecentJsonLines } = await import('./state.js');
+  const traces = await readRecentJsonLines(path.join(root, '.selfimprove', 'traces.jsonl'), { limit: 100 });
+  return traces.filter(t => t.outcome === 'failure' || t.error).slice(0, 20);
+}
+
+function applyProposerOutput(rawOutput, fallbackPrompt) {
+  const cleaned = (rawOutput || '').trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed) && parsed.length > 0) return { patches: parsed, parse_method: 'direct' };
+    if (parsed.patch || parsed.patches) return { patches: Array.isArray(parsed.patch) ? parsed.patch : [parsed.patch], parse_method: 'direct' };
+    if (parsed.patches) return { patches: parsed.patches, parse_method: 'direct' };
+  } catch {}
+
+  const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (codeBlockMatch) {
+    try {
+      const inner = codeBlockMatch[1].trim();
+      const parsed = JSON.parse(inner);
+      if (Array.isArray(parsed)) return { patches: parsed, parse_method: 'code_block' };
+      if (parsed.patch || parsed.patches) return { patches: Array.isArray(parsed.patch) ? parsed.patch : [parsed.patch], parse_method: 'code_block' };
+      if (parsed.patches) return { patches: parsed.patches, parse_method: 'code_block' };
+    } catch {}
+  }
+
+  const objStart = cleaned.indexOf('{');
+  const objEnd = cleaned.lastIndexOf('}');
+  if (objStart !== -1 && objEnd !== -1 && objEnd > objStart) {
+    try {
+      const substring = cleaned.substring(objStart, objEnd + 1);
+      const parsed = JSON.parse(substring);
+      if (Array.isArray(parsed)) return { patches: parsed, parse_method: 'brace_match' };
+      if (parsed.patch || parsed.patches) return { patches: Array.isArray(parsed.patch) ? parsed.patch : [parsed.patch], parse_method: 'brace_match' };
+      if (parsed.patches) return { patches: parsed.patches, parse_method: 'brace_match' };
+    } catch {}
+  }
+
+  const patchesMatch = cleaned.match(/"patches"\s*:\s*\[([\s\S]*?)\]/);
+  if (patchesMatch) {
+    try {
+      const arrStr = '[' + patchesMatch[1] + ']';
+      const parsed = JSON.parse(arrStr);
+      if (parsed.length > 0) return { patches: parsed, parse_method: 'array_extract' };
+    } catch {}
+  }
+
+  const linePatches = [];
+  const lines = cleaned.split('\n');
+  let currentPatch = null;
+  for (const line of lines) {
+    const opMatch = line.match(/"op"\s*:\s*"(add|remove|replace|test)"/);
+    const pathMatch = line.match(/"path"\s*:\s*"([^"]+)"/);
+    const valueMatch = line.match(/"value"\s*:\s*(".*"|[\d\w]+)/);
+    if (opMatch) {
+      if (currentPatch) linePatches.push(currentPatch);
+      currentPatch = { op: opMatch[1] };
+    }
+    if (currentPatch && pathMatch) currentPatch.path = pathMatch[1];
+    if (currentPatch && valueMatch) currentPatch.value = JSON.parse(valueMatch[1]);
+  }
+  if (currentPatch) linePatches.push(currentPatch);
+  if (linePatches.length > 0) return { patches: linePatches, parse_method: 'line_extract' };
+
+  return { patches: [], parse_method: 'fallback', reason: 'all_parse_attempts_failed' };
 }
 
 async function proposePatch(root, patch) {
@@ -171,7 +290,136 @@ async function runBackgroundReview(root, { limit = 20 } = {}) {
   return { reviewed: newTraces.length, results, status: await getSelfImproveStatus(root) };
 }
 
-function diagnoseFailures(failures, recentPatches) {
+async function diagnoseFailures(failures, recentPatches = []) {
+  const mmxResult = await callMmxProposer({ type: 'diagnose', failures, recentPatches });
+  if (mmxResult) return parseProposerDiagnosis(mmxResult);
+
+  const { root } = globalThis._selfImproveRoot ? { root: globalThis._selfImproveRoot } : { root: process.cwd() };
+  const { chatCompletion } = await import('./provider.js');
+  const { loadProfiles } = await import('./state.js');
+  const { base } = await loadProfiles(root);
+
+  const systemPrompt = buildProposerSystemPrompt(base);
+  const userPrompt = buildProposerDiagnosisUserPrompt(failures, recentPatches);
+
+  let response;
+  try {
+    response = await chatCompletion(root, {}, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ]);
+  } catch (err) {
+    return staticDiagnoseFailures(failures);
+  }
+
+  const msg = response.message || response;
+  const content = typeof msg === 'string' ? msg : (msg.content || '');
+  return parseProposerDiagnosis(content);
+}
+
+async function buildHarnessPatch(diagnosis) {
+  const mmxResult = await callMmxProposer({ type: 'patch', diagnosis });
+  if (mmxResult) {
+    const { patches } = applyProposerOutput(mmxResult);
+    if (patches.length > 0) return patches;
+  }
+
+  const { root } = globalThis._selfImproveRoot ? { root: globalThis._selfImproveRoot } : { root: process.cwd() };
+  const { chatCompletion } = await import('./provider.js');
+  const { loadProfiles } = await import('./state.js');
+  const { base } = await loadProfiles(root);
+
+  const systemPrompt = buildProposerSystemPrompt(base);
+  const userPrompt = buildProposerPatchUserPrompt(diagnosis);
+
+  let response;
+  try {
+    response = await chatCompletion(root, {}, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ]);
+  } catch (err) {
+    return staticBuildHarnessPatch(diagnosis);
+  }
+
+  const msg = response.message || response;
+  const content = typeof msg === 'string' ? msg : (msg.content || '');
+  const { patches } = applyProposerOutput(content);
+  return patches.length > 0 ? patches : staticBuildHarnessPatch(diagnosis);
+}
+
+async function callMmxProposer({ type, failures, recentPatches, diagnosis }) {
+  try {
+    const { execSync } = require('child_process');
+    let prompt;
+    if (type === 'diagnose') {
+      prompt = `Diagnose these harness failures and suggest what harness config changes would fix them:\n\nFailures:\n${failures.map(f => `- ${f}`).join('\n')}\n\nRecent patches:\n${recentPatches.slice(-3).map(p => `- ${JSON.stringify(p)}`).join('\n')}\n\nReturn JSON with {patterns: [...], suggestions: [...]}`;
+    } else {
+      prompt = `Based on this diagnosis, propose JSON patch operations to fix the harness:\n\n${JSON.stringify(diagnosis)}\n\nReturn JSON patch array [{op, path, value},...] to apply to overlay.profile.json. Only modify paths under /harness/.`;
+    }
+
+    const cmd = `npx mmx text chat --message "user:${prompt}" --output json --quiet --non-interactive`;
+    const output = execSync(cmd, { cwd: process.cwd(), timeout: 30000 });
+    const parsed = JSON.parse(output.toString());
+    return parsed.content || parsed.choices?.[0]?.message?.content || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildProposerSystemPrompt(baseProfile) {
+  return `You are an expert meta-harness engineer. You analyze AI coding agent failure patterns and propose precise JSON patches to the agent's harness configuration.
+
+Harness profile (base):
+${JSON.stringify(baseProfile, null, 2)}
+
+Rules:
+- Only propose patches under /harness/ paths
+- Never modify /id, /version, /growth/level, /growth/auto_apply, /memory/mcp_config, /memory/active_skills
+- max_patch_ops per iteration: 3
+- Each patch must have op (add|remove|replace), path (JSON Pointer), and value
+- Return ONLY valid JSON, no markdown, no explanation outside JSON`;
+}
+
+function buildProposerDiagnosisUserPrompt(failures, recentPatches) {
+  return `Analyze these failures and recent patches:
+
+Failures:
+${failures.map(f => `- ${f}`).join('\n')}
+
+Recent patches (last 3):
+${recentPatches.slice(-3).map(p => `- ${JSON.stringify(p)}`).join('\n')}
+
+Return JSON:
+{
+  "patterns": ["pattern1", "pattern2"],
+  "suggestions": ["suggestion1", "suggestion2"],
+  "root_cause": "what is the underlying issue"
+}`;
+}
+
+function buildProposerPatchUserPrompt(diagnosis) {
+  return `Based on this diagnosis, generate JSON patch operations:
+
+${JSON.stringify(diagnosis, null, 2)}
+
+Return JSON array of patch operations:
+[{op: "replace", path: "/harness/max_tool_turns", value: 10}, ...]`;
+}
+
+function parseProposerDiagnosis(content) {
+  const { patches } = applyProposerOutput(content);
+  if (patches.length > 0) {
+    return {
+      patterns: patches.map(p => p.path),
+      suggestions: patches.map(p => `${p.op} ${p.path}`),
+      root_cause: 'from_model'
+    };
+  }
+  return staticDiagnoseFailures([]);
+}
+
+function staticDiagnoseFailures(failures) {
   const patterns = {
     maxTurnsExceeded: failures.some(f => f.stopped_after_max_turns),
     toolErrors: failures.flatMap(f => f.failed_tools).filter(t => t.error),
@@ -194,18 +442,23 @@ function diagnoseFailures(failures, recentPatches) {
     suggestions.push('Add rule: verify file existence before reading');
   }
 
-  return { patterns, suggestions };
+  return { patterns, suggestions, root_cause: 'static_regex' };
 }
 
-function buildHarnessPatch(diagnosis) {
-  const patch = [];
-  if (diagnosis.patterns.maxTurnsExceeded) {
-    patch.push({ op: 'replace', path: '/harness/max_tool_turns', value: 12 });
+function staticBuildHarnessPatch(diagnosis) {
+  const patches = [];
+  const s = diagnosis.suggestions || [];
+  if (s.some(x => /max_history_messages|context/i.test(x))) {
+    patches.push({ op: 'replace', path: '/harness/max_history_messages', value: 20 });
   }
-  if (diagnosis.patterns.shellRedirection) {
-    patch.push({ op: 'add', path: '/rules/-', value: 'For new files, use write_file instead of run_command or shell redirection.' });
+  if (s.some(x => /max_tool_turns|timeout/i.test(x))) {
+    patches.push({ op: 'replace', path: '/harness/max_tool_turns', value: 15 });
   }
-  return patch;
+  if (s.some(x => /compact.*tool.*results|compact.*limit/i.test(x))) {
+    patches.push({ op: 'replace', path: '/harness/compact_tool_results', value: true });
+    patches.push({ op: 'replace', path: '/harness/compact_limit', value: 1500 });
+  }
+  return patches;
 }
 
 async function runSelfImprovePropose(root, options = {}) {
@@ -273,6 +526,143 @@ async function scheduleBackgroundReview(root) {
   return { scheduled: true, pending };
 }
 
+
+async function listCandidates(root) {
+  const { listCandidates: lc } = await import('./state.js');
+  return lc(root);
+}
+
+async function loadCandidateScores(root, id) {
+  const { loadCandidateScores: lcs } = await import('./state.js');
+  return lcs(root, id);
+}
+
+async function promoteCandidate(root, id) {
+  const { promoteCandidate: pc } = await import('./state.js');
+  return pc(root, id);
+}
+
+function computeParetoFrontier(candidates) {
+  const dominated = new Set();
+  const frontier = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = 0; j < candidates.length; j++) {
+      if (i === j) continue;
+      const a = candidates[i];
+      const b = candidates[j];
+      if (
+        a.failure_rate <= b.failure_rate &&
+        a.context_cost <= b.context_cost &&
+        (a.failure_rate < b.failure_rate || a.context_cost < b.context_cost)
+      ) {
+        dominated.add(j);
+      }
+    }
+  }
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (!dominated.has(i)) frontier.push(candidates[i]);
+  }
+
+  return frontier.sort((a, b) => a.id - b.id);
+}
+
+async function evaluateParetoFrontier(root) {
+  const candidates = await listCandidates(root);
+  if (candidates.length === 0) return [];
+
+  const scored = [];
+  for (const id of candidates) {
+    try {
+      const scores = await loadCandidateScores(root, id);
+      scored.push({ id, ...scores });
+    } catch {}
+  }
+
+  return computeParetoFrontier(scored);
+}
+
+async function criticEvaluate(patch, harnessSpec, context) {
+  const mmxResult = await callMmxCritic({ patch, harnessSpec, context });
+  if (mmxResult) return parseCriticOutput(mmxResult);
+
+  const { root } = globalThis._selfImproveRoot ? { root: globalThis._selfImproveRoot } : { root: process.cwd() };
+  const { chatCompletion } = await import('./provider.js');
+
+  const systemPrompt = `You are a senior harness engineer and critic. You evaluate proposed JSON patches to an AI agent's harness configuration. Be rigorous — only approve patches that are:
+1. Targeted at a real, identified failure
+2. Not overly broad or aggressive
+3. Within protected path boundaries
+4. Unlikely to cause regression
+
+Approve only the clearest, strongest patches. "Only the greatest and the best may pass."`;
+
+  const userPrompt = `Critique this patch proposal:
+
+Harness spec:
+${JSON.stringify(harnessSpec, null, 2)}
+
+Patch:
+${JSON.stringify(patch, null, 2)}
+
+Context:
+${JSON.stringify(context, null, 2)}
+
+Return JSON:
+{
+  "approved": true or false,
+  "reasoning": "why you approve or reject",
+  "suggested_refinements": ["refinement1"]
+}`;
+
+  try {
+    const response = await chatCompletion(root, {}, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ]);
+    const msg = response.message || response;
+    const content = typeof msg === 'string' ? msg : (msg.content || '');
+    return parseCriticOutput(content);
+  } catch (err) {
+    return { approved: false, reasoning: 'critic_unavailable', suggested_refinements: [] };
+  }
+}
+
+async function callMmxCritic({ patch, harnessSpec, context }) {
+  try {
+    const { execSync } = require('child_process');
+    const prompt = `Critique this harness patch:
+
+Patch: ${JSON.stringify(patch)}
+
+Return JSON with {approved: bool, reasoning: string, suggested_refinements: [string]}`;
+
+    const cmd = `npx mmx text chat --message "user:${prompt}" --output json --quiet --non-interactive`;
+    const output = execSync(cmd, { cwd: process.cwd(), timeout: 30000 });
+    const parsed = JSON.parse(output.toString());
+    return parsed.content || parsed.choices?.[0]?.message?.content || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCriticOutput(content) {
+  try {
+    const approvedMatch = content.match(/"approved"\s*:\s*(true|false)/i);
+    const reasoningMatch = content.match(/"reasoning"\s*:\s*"([^"]+)"/i);
+    const refinementsMatch = content.match(/"suggested_refinements"\s*:\s*\[([^\]]*)\]/);
+
+    return {
+      approved: approvedMatch ? approvedMatch[1] === 'true' : false,
+      reasoning: reasoningMatch ? reasoningMatch[1] : 'parse_failed',
+      suggested_refinements: refinementsMatch ? refinementsMatch[1].split(',').map(s => s.trim().replace(/"/g, '')).filter(Boolean) : []
+    };
+  } catch {
+    return { approved: false, reasoning: 'parse_error', suggested_refinements: [] };
+  }
+}
+
 module.exports = {
   DEMO_MESSAGE,
   learnFromMessage,
@@ -287,5 +677,14 @@ module.exports = {
   sandboxEvaluateCandidate,
   proposePatch,
   diagnoseFailures,
-  buildHarnessPatch
+  buildHarnessPatch,
+  staticDiagnoseFailures,
+  staticBuildHarnessPatch,
+  listCandidates,
+  loadCandidateScores,
+  promoteCandidate,
+  computeParetoFrontier,
+  evaluateParetoFrontier,
+  criticEvaluate,
+  applyProposerOutput
 };
