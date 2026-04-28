@@ -1,6 +1,5 @@
 'use strict';
 
-const { runAgentTask, TOOL_SCHEMAS } = require('./agent');
 const { chatCompletion } = require('./provider');
 const { loadConfig } = require('./config');
 const { loadProfiles } = require('./state');
@@ -109,6 +108,9 @@ async function persistSwarmArtifact(root, runId, name, data) {
 async function runFeatureAgent(root, feature, options) {
   const { active } = await loadProfiles(root);
   const config = await loadConfig(root);
+  const { runAgentTask, TOOL_SCHEMAS } = require('./agent');
+
+  const onProgress = options.onProgress || (() => {});
 
   const featurePrompt = `Implement this feature:\nTitle: ${feature.title}\nDescription: ${feature.description}\nDependencies: ${feature.dependencies?.join(', ') || 'none'}\n\nBegin implementation now.`;
 
@@ -127,8 +129,11 @@ async function runFeatureAgent(root, feature, options) {
     toolHandlers: swarmHandlers
   };
 
+  onProgress({ type: 'feature_start', feature });
+
   // Worker phase
   let workerResult = await runAgentTask(root, featurePrompt, workerOptions);
+  onProgress({ type: 'worker_done', feature, result: workerResult });
 
   // Critic phase
   let approved = false;
@@ -137,11 +142,13 @@ async function runFeatureAgent(root, feature, options) {
 
   for (let i = 0; i < maxCriticIterations; i++) {
     criticResult = await runCritic(root, config, feature, workerResult, options);
+    onProgress({ type: 'critic_review', feature, criticResult, iteration: i + 1 });
     if (criticResult.approved) {
       approved = true;
       break;
     }
     if (i < maxCriticIterations - 1) {
+      onProgress({ type: 'critic_retry', feature, feedback: criticResult.feedback });
       const retryPrompt = `The reviewer provided feedback. Address it before finishing.\n\nReviewer feedback (${criticResult.severity}): ${criticResult.feedback}\n\nSuggested fixes:\n${criticResult.suggested_fixes?.join('\n') || 'None provided.'}`;
       const retryResult = await runAgentTask(root, retryPrompt, {
         ...workerOptions,
@@ -152,7 +159,7 @@ async function runFeatureAgent(root, feature, options) {
     }
   }
 
-  return {
+  const result = {
     feature,
     status: approved ? 'completed' : 'completed_with_warnings',
     workerResult: {
@@ -163,6 +170,9 @@ async function runFeatureAgent(root, feature, options) {
     },
     criticResult
   };
+
+  onProgress({ type: 'feature_done', feature, result });
+  return result;
 }
 
 function mergeResults(results) {
@@ -197,10 +207,13 @@ function mergeResults(results) {
 async function runSwarm(root, prompt, options = {}) {
   const config = await loadConfig(root);
   const runId = options.runId || `swarm-${Date.now()}`;
+  const onProgress = options.onProgress || (() => {});
 
   // Planning phase
+  onProgress({ type: 'planning', prompt });
   const features = await planFeatures(root, config, prompt, options);
   await persistSwarmArtifact(root, runId, 'plan.json', { prompt, features, timestamp: Date.now() });
+  onProgress({ type: 'planned', features });
 
   if (options.planOnly) {
     return { runId, plan: features, executed: false };
@@ -209,23 +222,30 @@ async function runSwarm(root, prompt, options = {}) {
   // Execution phase with concurrency limit
   const concurrency = options.concurrency || 3;
   const results = [];
+  let totalCompleted = 0;
 
   for (let i = 0; i < features.length; i += concurrency) {
     if (options.signal?.aborted) throw new Error('AbortError');
-    const batch = features.slice(i, i + concurrency).map(feature =>
-      runFeatureAgent(root, feature, options).catch(error => ({
+    const batch = features.slice(i, i + concurrency).map((feature, batchIdx) => {
+      const featureIdx = i + batchIdx;
+      return runFeatureAgent(root, feature, { ...options, onProgress: (evt) => {
+        onProgress({ ...evt, featureIdx, total: features.length });
+      }}).catch(error => ({
         feature,
         status: 'failed',
         error: error.message
-      }))
-    );
+      }));
+    });
     const batchResults = await Promise.allSettled(batch);
+    totalCompleted += batch.length;
     results.push(...batchResults);
+    onProgress({ type: 'batch_complete', total: totalCompleted, totalFeatures: features.length });
   }
 
   const merged = mergeResults(results);
   const output = { runId, prompt, merged, timestamp: Date.now() };
   await persistSwarmArtifact(root, runId, 'results.json', output);
+  onProgress({ type: 'swarm_done', output });
 
   return output;
 }

@@ -129,6 +129,23 @@ const TOOL_SCHEMAS = [
         additionalProperties: false
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delegate_swarm',
+      description: 'Delegate a complex multi-feature task to parallel swarm subagents. Each feature runs independently with its own agent + critic. Use when the task has 2+ clear independent sub-tasks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'The full task description to delegate to the swarm orchestrator' },
+          enable_mmx: { type: 'boolean', description: 'Allow feature agents to use mmx search and text generation (default false)' },
+          concurrency: { type: 'number', description: 'Number of feature agents to run in parallel (default 3)' }
+        },
+        required: ['prompt'],
+        additionalProperties: false
+      }
+    }
   }
 ];
 
@@ -140,8 +157,7 @@ const TOOL_POLICY_KEYS = {
   edit_file: 'edit_file',
   ask_user: 'ask_user',
   task_complete: 'task_complete',
-  mmx_search: 'mmx_search',
-  mmx_text_chat: 'mmx_text_chat'
+  delegate_swarm: 'delegate_swarm'
 };
 
 function compactJson(value, limit = 12000) {
@@ -417,6 +433,20 @@ async function runAgentTask(root, prompt, options = {}) {
           return completionResult;
         }
 
+        if (name === 'delegate_swarm' && isAutonomous) {
+          const args = parseToolArgs(toolCall);
+          const swarmPrompt = String(args.prompt || '');
+          if (!swarmPrompt) throw new Error('delegate_swarm requires prompt');
+          const swarmOptions = {
+            enableMmx: Boolean(args.enable_mmx),
+            concurrency: Math.max(1, Math.min(10, parseInt(args.concurrency, 10) || 3)),
+            signal: options.signal,
+            interactive: options.interactive
+          };
+          const swarmResult = await require('./orchestrator').runSwarm(root, swarmPrompt, swarmOptions);
+          result = { ok: true, result: { swarm: true, merged: swarmResult.merged || swarmResult } };
+        }
+
         if (name === 'ask_user' && isAutonomous) {
           const candidate = validateAskUserArgs(parseToolArgs(toolCall));
           let decision = deterministicPolicy(candidate);
@@ -680,12 +710,85 @@ async function handlePermissionsCommand(root, arg) {
   return true;
 }
 
+function formatSwarmFeatures(features) {
+  const lines = ['\nPlanning... features found:'];
+  for (let i = 0; i < features.length; i++) {
+    const f = features[i];
+    lines.push(`  ${i + 1}. [${f.estimated_effort || 'medium'}] ${f.title}`);
+    lines.push(`     ${f.description.slice(0, 120)}`);
+    if (f.dependencies?.length) lines.push(`     depends: ${f.dependencies.join(', ')}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+async function handleSwarmCommand(root, prompt, rl) {
+  if (!prompt.trim()) {
+    process.stdout.write('usage: /swarm <prompt> [--yes]\n');
+    return true;
+  }
+  const yes = /--yes\b/.test(prompt);
+  const cleanPrompt = prompt.replace(/--yes\b/g, '').trim();
+
+  process.stdout.write('Analyzing request...\n');
+  const config = await loadConfig(root);
+  const { planFeatures } = require('./orchestrator');
+
+  try {
+    const features = await planFeatures(root, config, cleanPrompt, { signal: null });
+    process.stdout.write(formatSwarmFeatures(features));
+
+    if (!yes && rl) {
+      const ok = await askApproval('Execute all features?', rl);
+      if (!ok) {
+        process.stdout.write('Swarm cancelled.\n');
+        return true;
+      }
+    }
+
+    process.stdout.write('Executing swarm...\n');
+    const output = await require('./orchestrator').runSwarm(root, cleanPrompt, {
+      signal: null,
+      interactive: true,
+      yes,
+      onProgress: (evt) => {
+        if (evt.type === 'feature_start') {
+          process.stdout.write(`  Starting: ${evt.feature.title}\n`);
+        } else if (evt.type === 'feature_done') {
+          const status = evt.result.status === 'completed' ? '✓' : '⚠';
+          process.stdout.write(`  ${status} ${evt.feature.title}: ${evt.result.status}\n`);
+        }
+      }
+    });
+
+    const m = output.merged;
+    process.stdout.write(`\nSwarm complete — ${m.summary}\n`);
+    if (m.successful.length) {
+      process.stdout.write('Successful:\n');
+      for (const f of m.successful) {
+        const files = f.workerResult?.touchedFiles || [];
+        process.stdout.write(`  ✓ ${f.feature.title}`);
+        if (files.length) process.stdout.write(` (${files.join(', ')})`);
+        process.stdout.write('\n');
+      }
+    }
+    if (m.failed.length) {
+      process.stdout.write('Failed:\n');
+      for (const f of m.failed) process.stdout.write(`  ✗ ${f.feature?.title || 'unknown'}: ${f.error || 'unknown error'}\n`);
+    }
+    process.stdout.write('\n');
+  } catch (error) {
+    process.stderr.write(`Swarm error: ${error.message}\n`);
+  }
+  return true;
+}
+
 async function handleSlashCommand(root, prompt, rl) {
   const [command, ...parts] = prompt.split(/\s+/);
   const arg = parts.join(' ').trim();
   if (command === '/exit' || command === '/quit') return false;
   if (command === '/help') {
-    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /config, /help, /exit\n');
+    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /swarm <prompt>, /config, /help, /exit\n');
     return true;
   }
   if (command === '/config') {
@@ -701,6 +804,7 @@ async function handleSlashCommand(root, prompt, rl) {
   if (command === '/connect') return handleConnectCommand(root, arg, rl);
   if (command === '/models') return handleModelsCommand(root, arg, rl);
   if (command === '/permissions') return handlePermissionsCommand(root, arg);
+  if (command === '/swarm') return handleSwarmCommand(root, arg, rl);
   if (command === '/self-improve') return handleSelfImproveCommand(root, arg);
   process.stdout.write(`Unknown command: ${command}. Use /help.\n`);
   return true;
