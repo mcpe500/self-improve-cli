@@ -11,6 +11,9 @@ const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secret
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
 const { learnFromMessage, runDemo, runBackgroundReview, recordTaskTrace, scheduleBackgroundReview } = require('./self-improve');
 const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue, reviewQuestion } = require('./ask_gate');
+const { MCPManager, buildMcpToolBridge } = require('./mcp-client');
+const { loadMcpConfig, saveMcpConfig } = require('./state');
+const { discoverSkills, buildSkillsPrompt, getSkillTools, enableSkill, disableSkill } = require('./skills');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -165,8 +168,10 @@ function compactJson(value, limit = 12000) {
   return text.length > limit ? `${text.slice(0, limit)}...<truncated>` : text;
 }
 
-function systemPrompt(profile) {
-  return `${compileProfilePrompt(profile)}\n\nWorkspace:\n- cwd=${process.cwd()}\n- platform=${process.platform}\n- os=${os.type()} ${os.release()}\n- path_separator=${require('node:path').sep}\n\nAgent loop rules:\n- You are self-improve-cli, a lightweight coding agent.\n- Use tool calls when repository facts are needed.\n- For new files, use write_file. Do not use run_command for file creation.\n- Read relevant files before editing existing files.\n- For edits, use edit_file with exact unique old_text.\n- run_command uses spawn with shell=false: no redirection, pipes, heredocs, shell builtins, or compound command strings.\n- Keep final answers concise and include validation run when possible.\n- Do not output <think> blocks or hidden reasoning.\n- Do not claim a command passed unless run_command output proves it.`;
+function systemPrompt(profile, skillsBlock) {
+  let prompt = `${compileProfilePrompt(profile)}\n\nWorkspace:\n- cwd=${process.cwd()}\n- platform=${process.platform}\n- os=${os.type()} ${os.release()}\n- path_separator=${require('node:path').sep}\n\nAgent loop rules:\n- You are self-improve-cli, a lightweight coding agent.\n- Use tool calls when repository facts are needed.\n- For new files, use write_file. Do not use run_command for file creation.\n- Read relevant files before editing existing files.\n- For edits, use edit_file with exact unique old_text.\n- run_command uses spawn with shell=false: no redirection, pipes, heredocs, shell builtins, or compound command strings.\n- Keep final answers concise and include validation run when possible.\n- Do not output <think> blocks or hidden reasoning.\n- Do not claim a command passed unless run_command output proves it.`;
+  if (skillsBlock) prompt += skillsBlock;
+  return prompt;
 }
 
 function parseToolArgs(toolCall) {
@@ -353,7 +358,15 @@ async function runAgentTask(root, prompt, options = {}) {
   const { active } = await loadProfiles(root);
   const config = await loadConfig(root);
   const isAutonomous = Boolean(options.autonomous) || Boolean(active.harness?.autonomous_mode);
-  let systemContent = systemPrompt(active);
+
+  const activeSkillNames = active.memory?.active_skills || [];
+  let skillsBlock = '';
+  try {
+    const discovered = await discoverSkills(root);
+    skillsBlock = buildSkillsPrompt(discovered, activeSkillNames);
+  } catch {}
+
+  let systemContent = systemPrompt(active, skillsBlock);
   if (isAutonomous) {
     systemContent += '\n\nYou are in autonomous mode. Continue working by default. Do not ask the user unnecessary questions. If you genuinely need user authority, use the ask_user tool. When finished, use task_complete. Otherwise, make reasonable decisions and keep going.';
   }
@@ -370,9 +383,34 @@ async function runAgentTask(root, prompt, options = {}) {
   let loggedToolFailure = false;
   const deferredQueue = isAutonomous ? new DeferredQuestionsQueue() : null;
   let status = 'running';
-  for (let turn = 0; turn < maxTurns; turn += 1) {
+
+  let mcpManager = null;
+  let allTools = options.tools ? [...options.tools] : [...TOOL_SCHEMAS];
+  const allHandlers = { ...(options.toolHandlers || {}) };
+
+  try {
+    const skillTools = await getSkillTools(root, activeSkillNames);
+    allTools.push(...skillTools.schemas);
+    Object.assign(allHandlers, skillTools.handlers);
+  } catch {}
+
+  try {
+    const mcpConfig = await loadMcpConfig(root);
+    if (mcpConfig.mcpServers && Object.keys(mcpConfig.mcpServers).length > 0) {
+      mcpManager = new MCPManager(root, mcpConfig);
+      await mcpManager.discover();
+      const bridge = buildMcpToolBridge(mcpManager);
+      allTools.push(...bridge.mcpToolSchemas);
+      Object.assign(allHandlers, bridge.mcpToolHandlers);
+    }
+  } catch (err) {
+    process.stderr.write(`mcp: init failed: ${err.message}\n`);
+  }
+
+  try {
+    for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
-    const toolsToUse = options.tools || TOOL_SCHEMAS;
+    const toolsToUse = allTools;
     const assistant = await chatCompletion(root, config, requestMessages, toolsToUse, options.signal);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
@@ -477,7 +515,7 @@ async function runAgentTask(root, prompt, options = {}) {
         } else if (name === 'ask_user' && !isAutonomous) {
           result = { ok: false, error: 'ask_user tool requires autonomous mode. Run with --dont-ask or set harness.autonomous_mode true.' };
         } else {
-          result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config }));
+          result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config, toolHandlers: allHandlers }));
         }
       } catch (error) {
         result = { ok: false, error: error.message };
@@ -526,6 +564,11 @@ async function runAgentTask(root, prompt, options = {}) {
     if (options.interactive) process.stdout.write(deferredQueue.toReport());
   }
   return result;
+  } finally {
+    if (mcpManager) {
+      await mcpManager.shutdown().catch(() => {});
+    }
+  }
 }
 
 async function printProviderHelp(root, config) {
@@ -788,7 +831,7 @@ async function handleSlashCommand(root, prompt, rl) {
   const arg = parts.join(' ').trim();
   if (command === '/exit' || command === '/quit') return false;
   if (command === '/help') {
-    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /swarm <prompt>, /config, /help, /exit\n');
+    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /swarm <prompt>, /mcp [add|remove|list|reload], /skills [list|enable|disable], /config, /help, /exit\n');
     return true;
   }
   if (command === '/config') {
@@ -806,7 +849,120 @@ async function handleSlashCommand(root, prompt, rl) {
   if (command === '/permissions') return handlePermissionsCommand(root, arg);
   if (command === '/swarm') return handleSwarmCommand(root, arg, rl);
   if (command === '/self-improve') return handleSelfImproveCommand(root, arg);
+  if (command === '/mcp') return handleMCPCommand(root, arg);
+  if (command === '/skills') return handleSkillsCommand(root, arg);
   process.stdout.write(`Unknown command: ${command}. Use /help.\n`);
+  return true;
+}
+
+async function handleMCPCommand(root, arg) {
+  const [sub, ...rest] = arg.split(/\s+/);
+  if (sub === 'add') {
+    if (rest.length < 2) {
+      process.stdout.write('Usage: /mcp add <name> <command> [args...] [--env KEY=VAL]\n');
+      return true;
+    }
+    const name = rest[0];
+    const command = rest[1];
+    const mArgs = [];
+    const env = {};
+    let i = 2;
+    while (i < rest.length) {
+      if (rest[i] === '--env' && rest[i + 1]) {
+        const eqIdx = rest[i + 1].indexOf('=');
+        if (eqIdx > 0) env[rest[i + 1].slice(0, eqIdx)] = rest[i + 1].slice(eqIdx + 1);
+        i += 2;
+      } else {
+        mArgs.push(rest[i]);
+        i++;
+      }
+    }
+    const config = await loadMcpConfig(root);
+    if (config.mcpServers[name]) {
+      process.stdout.write(`Server "${name}" already exists. Use /mcp remove first.\n`);
+      return true;
+    }
+    config.mcpServers[name] = { command, args: mArgs, env };
+    await saveMcpConfig(root, config);
+    process.stdout.write(`Added "${name}". Reconnect with /mcp reload or restart chat.\n`);
+    return true;
+  }
+  if (sub === 'remove') {
+    const name = rest[0];
+    if (!name) {
+      process.stdout.write('Usage: /mcp remove <name>\n');
+      return true;
+    }
+    const config = await loadMcpConfig(root);
+    if (!config.mcpServers[name]) {
+      process.stdout.write(`Server "${name}" not found.\n`);
+      return true;
+    }
+    delete config.mcpServers[name];
+    await saveMcpConfig(root, config);
+    process.stdout.write(`Removed "${name}".\n`);
+    return true;
+  }
+  if (sub === 'list') {
+    const config = await loadMcpConfig(root);
+    const servers = config.mcpServers || {};
+    const names = Object.keys(servers);
+    if (!names.length) {
+      process.stdout.write('No MCP servers configured.\n');
+      return true;
+    }
+    for (const name of names) {
+      const sc = servers[name];
+      const type = sc.url ? 'remote' : 'stdio';
+      process.stdout.write(`  ${name} [${type}] ${sc.command || sc.url}\n`);
+    }
+    return true;
+  }
+  if (sub === 'reload') {
+    process.stdout.write('MCP servers will reload on next task. Restart chat for immediate effect.\n');
+    return true;
+  }
+  process.stdout.write('Usage: /mcp [add|remove|list|reload]\n');
+  return true;
+}
+
+async function handleSkillsCommand(root, arg) {
+  const [sub, ...rest] = arg.split(/\s+/);
+  if (sub === 'list' || !sub) {
+    const discovered = await discoverSkills(root);
+    const { active } = await loadProfiles(root);
+    const activeNames = active.memory?.active_skills || [];
+    if (!discovered.length) {
+      process.stdout.write('No skills found.\n');
+      return true;
+    }
+    for (const skill of discovered) {
+      const marker = activeNames.includes(skill.name) ? ' [ACTIVE]' : '';
+      process.stdout.write(`  ${skill.name}${marker} — ${skill.description}\n`);
+    }
+    return true;
+  }
+  if (sub === 'enable') {
+    const name = rest[0];
+    if (!name) {
+      process.stdout.write('Usage: /skills enable <name>\n');
+      return true;
+    }
+    await enableSkill(root, name);
+    process.stdout.write(`Skill "${name}" enabled. Takes effect on next task.\n`);
+    return true;
+  }
+  if (sub === 'disable') {
+    const name = rest[0];
+    if (!name) {
+      process.stdout.write('Usage: /skills disable <name>\n');
+      return true;
+    }
+    await disableSkill(root, name);
+    process.stdout.write(`Skill "${name}" disabled.\n`);
+    return true;
+  }
+  process.stdout.write('Usage: /skills [list|enable|disable]\n');
   return true;
 }
 

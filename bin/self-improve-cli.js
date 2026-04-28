@@ -42,6 +42,12 @@ Usage:
   sicli tool write <file> <content>
   sicli tool edit <file> <old_text> <new_text>
   sicli swarm <prompt...> [--plan-only] [--concurrency <n>] [--max-critic-iterations <n>] [--yes]
+  sicli mcp add <name> --command <cmd> [--args a1,a2] [--env KEY=VAL]
+  sicli mcp remove <name>
+  sicli mcp list
+  sicli skills [list]
+  sicli skills enable <name>
+  sicli skills disable <name>
 
 Notes:
   - State lives in .selfimprove/.
@@ -463,6 +469,81 @@ throw new Error(`unknown self-improve action: ${action}`);
       return;
     }
     throw new Error(`unknown tool: ${tool || '(missing)'}`);
+  }
+
+  if (command === 'mcp') {
+    const { loadMcpConfig, saveMcpConfig } = require('../src/state');
+    const [action, ...mcpRest] = rest;
+    if (action === 'add') {
+      const name = flags.name || mcpRest[0];
+      const cmd = flags.command;
+      if (!name || !cmd) throw new Error('usage: sicli mcp add <name> --command <cmd> [--args a1,a2] [--env KEY=VAL]');
+      let mArgs = [];
+      if (typeof flags.args === 'string') mArgs = flags.args.split(',');
+      const env = {};
+      if (flags.env) {
+        const pairs = Array.isArray(flags.env) ? flags.env : [flags.env];
+        for (const p of pairs) {
+          const eqIdx = p.indexOf('=');
+          if (eqIdx > 0) env[p.slice(0, eqIdx)] = p.slice(eqIdx + 1);
+        }
+      }
+      const config = await loadMcpConfig(root);
+      config.mcpServers[name] = { command: cmd, args: mArgs, env };
+      await saveMcpConfig(root, config);
+      printJson({ ok: true, name, config: config.mcpServers[name] });
+      return;
+    }
+    if (action === 'remove') {
+      const name = mcpRest[0];
+      if (!name) throw new Error('usage: sicli mcp remove <name>');
+      const config = await loadMcpConfig(root);
+      if (!config.mcpServers[name]) throw new Error(`Server "${name}" not found`);
+      delete config.mcpServers[name];
+      await saveMcpConfig(root, config);
+      printJson({ ok: true, removed: name });
+      return;
+    }
+    if (action === 'list') {
+      const config = await loadMcpConfig(root);
+      const servers = [];
+      for (const [name, sc] of Object.entries(config.mcpServers || {})) {
+        servers.push({ name, type: sc.url ? 'remote' : 'stdio', command: sc.command || sc.url });
+      }
+      printJson({ servers, count: servers.length });
+      return;
+    }
+    throw new Error(`unknown mcp action: ${action}. Use add, remove, or list.`);
+  }
+
+  if (command === 'skills') {
+    const { discoverSkills } = require('../src/skills');
+    const { enableSkill, disableSkill } = require('../src/skills');
+    const { loadProfiles } = require('../src/state');
+    const [action, ...skillsRest] = rest;
+    if (action === 'list' || !action) {
+      const discovered = await discoverSkills(root);
+      const { active } = await loadProfiles(root);
+      const activeNames = active.memory?.active_skills || [];
+      const skills = discovered.map(s => ({ name: s.name, description: s.description, active: activeNames.includes(s.name) }));
+      printJson({ skills, count: skills.length });
+      return;
+    }
+    if (action === 'enable') {
+      const name = skillsRest[0];
+      if (!name) throw new Error('usage: sicli skills enable <name>');
+      await enableSkill(root, name);
+      printJson({ ok: true, enabled: name });
+      return;
+    }
+    if (action === 'disable') {
+      const name = skillsRest[0];
+      if (!name) throw new Error('usage: sicli skills disable <name>');
+      await disableSkill(root, name);
+      printJson({ ok: true, disabled: name });
+      return;
+    }
+    throw new Error(`unknown skills action: ${action}. Use list, enable, or disable.`);
   }
 
   throw new Error(`unknown command: ${command}`);

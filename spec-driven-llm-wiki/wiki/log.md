@@ -97,3 +97,20 @@ Added 5 pattern pages: fallback-chain, worker-pool-sandbox, pareto-frontier, def
 Updated wiki/index.md and wiki/overview.md with all new pages.
 
 Rewrote AGENTS.md from 181 to 585 lines: added REVIEW workflow, HANDOVER workflow, Graph Schema, Wikilink Syntax, Wiki Page Conventions, Spec Conventions, Parent Project Integration, Agent-Specific Integrations, Configuration, Failure Recovery, Testing, Log Format sections.
+
+## [2026-04-28] spec + implement | MCP + Skills integration (specs 009/010/011)
+
+Created specs:
+- `spec/009.mcp-protocol-client.md` — MCP protocol client with stdio + HTTP transport, tool bridge, agent integration
+- `spec/010.mcp-commands.md` — /mcp chat commands + CLI subcommands for MCP server management
+- `spec/011.skills-system.md` — Skills discovery (6 dirs), SKILL.md parsing, tool registration, /skills commands
+
+Implemented:
+- `src/mcp-transport.js` — StdioTransport (JSON-RPC Content-Length framing), HTTPTransport (POST + env interpolation)
+- `src/mcp-client.js` — MCPClient (init/tools/list/call), MCPManager (multi-server), convertInputSchema, buildMcpToolBridge
+- `src/skills.js` — discoverSkills, parseSkillFrontmatter, loadSkill, enableSkill, disableSkill, getSkillTools
+- Modified `src/state.js` — loadMcpConfig, saveMcpConfig, getActiveSkills, setActiveSkills, init mcp.json
+- Modified `src/agent.js` — MCP+skills tool merging in runAgentTask, /mcp and /skills slash commands, skills prompt injection
+- Modified `bin/self-improve-cli.js` — mcp add/remove/list, skills list/enable/disable CLI subcommands
+
+Tests: 74/76 pass (19 new tests, 2 pre-existing failures). No regressions.

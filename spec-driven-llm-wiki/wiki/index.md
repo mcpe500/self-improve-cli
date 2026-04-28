@@ -20,6 +20,9 @@ Component pages in `components/`.
 - [Daemon](components/daemon.md)
 - [Coding Tools](components/coding-tools.md)
 - [Secrets Storage](components/secrets-storage.md)
+- [MCP Transport](components/mcp-transport.md)
+- [MCP Client](components/mcp-client.md)
+- [Skills System](components/skills-system.md)
 
 ## Decisions
 
@@ -41,6 +44,15 @@ Reusable patterns in `patterns/`.
 - [Pareto Frontier Filtering](patterns/pareto-frontier.md)
 - [Deferred Questions Queue](patterns/deferred-questions.md)
 - [Growth Gate](patterns/growth-gate.md)
+- [Tool Prefix Namespacing](patterns/tool-prefix-namespacing.md)
+
+## Specs
+
+Specs in `spec/`.
+
+- [Spec 009: MCP Protocol Client](../spec/009.mcp-protocol-client.md)
+- [Spec 010: MCP Commands](../spec/010.mcp-commands.md)
+- [Spec 011: Skills System](../spec/011.skills-system.md)
 
 ## Syntheses
 

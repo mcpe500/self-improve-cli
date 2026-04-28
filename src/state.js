@@ -13,6 +13,7 @@ const TRACES_LOG = 'traces.jsonl';
 const OPTIMIZER_STATE = 'optimizer.json';
 const DAEMON_STATE = 'daemon.json';
 const DAEMON_PID = 'daemon.pid';
+const MCP_CONFIG = 'mcp.json';
 
 function statePath(root, file = '') {
   return path.join(root, STATE_DIR, file);
@@ -36,6 +37,27 @@ async function readJson(file, fallback = undefined) {
 async function writeJson(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+async function loadMcpConfig(root = process.cwd()) {
+  return readJson(statePath(root, MCP_CONFIG), { mcpServers: {}, defaults: {} });
+}
+
+async function saveMcpConfig(root, config) {
+  await writeJson(statePath(root, MCP_CONFIG), config);
+}
+
+async function getActiveSkills(root = process.cwd()) {
+  const { overlay } = await loadProfiles(root);
+  return overlay.memory?.active_skills || [];
+}
+
+async function setActiveSkills(root, names) {
+  const { overlay } = await loadProfiles(root);
+  if (!overlay.memory) overlay.memory = {};
+  overlay.memory.active_skills = names;
+  await saveOverlay(root, overlay);
+  return names;
 }
 
 async function initWorkspace(root = process.cwd()) {
@@ -65,6 +87,10 @@ async function initWorkspace(root = process.cwd()) {
   for (const file of [EVENTS_LOG, PATCHES_LOG, TRACES_LOG]) {
     const target = statePath(root, file);
     if (!(await exists(target))) await fs.writeFile(target, '', 'utf8');
+  }
+  const mcpPath = statePath(root, MCP_CONFIG);
+  if (!(await exists(mcpPath))) {
+    await writeJson(mcpPath, { mcpServers: {}, defaults: {} });
   }
   return dir;
 }
@@ -411,5 +437,9 @@ module.exports = {
   readDaemonPid,
   clearDaemonPid,
   getTraceCount,
-  isDaemonRunning
+  isDaemonRunning,
+  loadMcpConfig,
+  saveMcpConfig,
+  getActiveSkills,
+  setActiveSkills
 };
