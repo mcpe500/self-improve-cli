@@ -41,11 +41,13 @@ Usage:
   sicli tool run <cmd> [args...]
   sicli tool write <file> <content>
   sicli tool edit <file> <old_text> <new_text>
+  sicli swarm <prompt...> [--plan-only] [--concurrency <n>] [--max-critic-iterations <n>] [--yes]
 
 Notes:
   - State lives in .selfimprove/.
   - Base profile is immutable; overlay profile mutates.
   - Commands run with shell=false for portability.
+  - Swarm mode splits a prompt into features and runs agents in parallel.
 `;
 }
 
@@ -169,6 +171,32 @@ async function main() {
       } else {
         throw error;
       }
+    } finally {
+      process.removeListener('SIGINT', onSignal);
+    }
+    return;
+  }
+
+  if (command === 'swarm') {
+    const prompt = rest.join(' ').trim();
+    if (!prompt) throw new Error('usage: sicli swarm <prompt> [--plan-only] [--concurrency <n>] [--max-critic-iterations <n>] [--yes]');
+    const { runSwarm } = require('../src/orchestrator');
+    const controller = new AbortController();
+    const onSignal = () => { controller.abort(); };
+    process.on('SIGINT', onSignal);
+    try {
+      const result = await runSwarm(root, prompt, {
+        planOnly: Boolean(flags['plan-only']),
+        concurrency: parseInt(flags.concurrency || '3', 10),
+        maxCriticIterations: parseInt(flags['max-critic-iterations'] || '1', 10),
+        signal: controller.signal,
+        interactive: false,
+        yes: Boolean(flags.yes)
+      });
+      printJson(result);
+    } catch (error) {
+      if (error.name === 'AbortError') process.stdout.write('[Cancelled]\n');
+      else throw error;
     } finally {
       process.removeListener('SIGINT', onSignal);
     }

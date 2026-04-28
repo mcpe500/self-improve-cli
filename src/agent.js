@@ -139,7 +139,9 @@ const TOOL_POLICY_KEYS = {
   write_file: 'write_file',
   edit_file: 'edit_file',
   ask_user: 'ask_user',
-  task_complete: 'task_complete'
+  task_complete: 'task_complete',
+  mmx_search: 'mmx_search',
+  mmx_text_chat: 'mmx_text_chat'
 };
 
 function compactJson(value, limit = 12000) {
@@ -275,6 +277,9 @@ async function executeTool(root, profile, toolCall, options) {
   }
   if (name === 'write_file') return writeFileTool(root, args.path, args.content, { signal: options.signal, overwrite: args.overwrite !== false });
   if (name === 'edit_file') return editFileTool(root, args.path, args.old_text, args.new_text, { signal: options.signal });
+  if (options.toolHandlers && name in options.toolHandlers) {
+    return options.toolHandlers[name](root, args, options);
+  }
   throw new Error(`Unknown tool: ${name || '(missing)'}`);
 }
 
@@ -351,7 +356,8 @@ async function runAgentTask(root, prompt, options = {}) {
   let status = 'running';
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
-    const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS, options.signal);
+    const toolsToUse = options.tools || TOOL_SCHEMAS;
+    const assistant = await chatCompletion(root, config, requestMessages, toolsToUse, options.signal);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
     if (!toolCalls.length) {
