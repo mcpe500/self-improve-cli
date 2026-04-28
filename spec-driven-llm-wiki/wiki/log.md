@@ -131,3 +131,27 @@ Spec status updates (all 11 specs):
 - 008-011: `DRAFT` → `COMPLETED`
 
 Result: 77/77 tests pass, 0 failures, 0 regressions.
+
+## [2026-04-28] refactor | Full codebase refactor — critical bugs + utilities extraction
+
+Critical bug fixes:
+- `src/self-improve.js` — added missing `await` to `diagnoseFailures` + `buildHarnessPatch`
+- `src/self-improve.js` — fixed `validateProfile` return check (`!== true` instead of `.valid`)
+- `src/self-improve.js` — `chatCompletion` now loads config via `loadConfig(root)` before call
+- `src/self-improve.js` — replaced `execSync` command injection with `spawnSync` array args (2 locations)
+- `src/state.js` — `rollbackToBackup` now looks for `.bak.0` instead of `.bak`
+- `src/daemon.js` — HTTP route handlers wrapped in `try/catch` to prevent daemon crashes
+
+Foundation extraction:
+- `src/constants.js` — centralized timeouts, limits, defaults (no more magic numbers)
+- `src/text-utils.js` — `stripThinkBlocks`, `stripJsonCodeBlock`, `compactJson`
+- `src/json-utils.js` — `appendJsonLine`, `readAllJsonLines`, `readRecentJsonLines`, `applyJsonPatch`
+
+Deduplication:
+- Removed `stripThinkBlocks` from `agent.js`, `ask_gate.js`, `orchestrator.js` → imported from `text-utils`
+- Removed `compactJson` from `agent.js` → imported from `text-utils`
+- Removed `applyJsonPatch` family from `profile.js` → imported from `json-utils`
+- Removed duplicate `appendJsonLine` from `state.js` → imported from `json-utils`
+- Merged duplicate `state.js` imports in `agent.js`
+
+Tests: 92/92 pass (+15 new tests). 0 failures, 0 regressions.

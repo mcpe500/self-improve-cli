@@ -55,8 +55,8 @@ async function sandboxEvaluateCandidate(root, patch, options = {}) {
 
   const { validateProfile } = await import('./profile.js');
   const validation = validateProfile(candidateActive, 'candidate harness');
-  if (!validation.valid) {
-    return { passed: false, reason: `structural_invalid: ${validation.error}`, failure_rate: 1.0 };
+  if (validation !== true) {
+    return { passed: false, reason: `structural_invalid: ${validation !== true ? validation : 'unknown'}`, failure_rate: 1.0 };
   }
 
   const baseline_rate = 0.5;
@@ -303,9 +303,10 @@ async function diagnoseFailures(failures, recentPatches = []) {
   const systemPrompt = buildProposerSystemPrompt(base);
   const userPrompt = buildProposerDiagnosisUserPrompt(failures, recentPatches);
 
+  const config = await loadConfig(root);
   let response;
   try {
-    response = await chatCompletion(root, {}, [
+    response = await chatCompletion(root, config, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ]);
@@ -333,9 +334,10 @@ async function buildHarnessPatch(diagnosis) {
   const systemPrompt = buildProposerSystemPrompt(base);
   const userPrompt = buildProposerPatchUserPrompt(diagnosis);
 
+  const config = await loadConfig(root);
   let response;
   try {
-    response = await chatCompletion(root, {}, [
+    response = await chatCompletion(root, config, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ]);
@@ -351,7 +353,7 @@ async function buildHarnessPatch(diagnosis) {
 
 async function callMmxProposer({ type, failures, recentPatches, diagnosis }) {
   try {
-    const { execSync } = require('child_process');
+    const { spawnSync } = require('node:child_process');
     let prompt;
     if (type === 'diagnose') {
       prompt = `Diagnose these harness failures and suggest what harness config changes would fix them:\n\nFailures:\n${failures.map(f => `- ${f}`).join('\n')}\n\nRecent patches:\n${recentPatches.slice(-3).map(p => `- ${JSON.stringify(p)}`).join('\n')}\n\nReturn JSON with {patterns: [...], suggestions: [...]}`;
@@ -359,9 +361,9 @@ async function callMmxProposer({ type, failures, recentPatches, diagnosis }) {
       prompt = `Based on this diagnosis, propose JSON patch operations to fix the harness:\n\n${JSON.stringify(diagnosis)}\n\nReturn JSON patch array [{op, path, value},...] to apply to overlay.profile.json. Only modify paths under /harness/.`;
     }
 
-    const cmd = `npx mmx text chat --message "user:${prompt}" --output json --quiet --non-interactive`;
-    const output = execSync(cmd, { cwd: process.cwd(), timeout: 30000 });
-    const parsed = JSON.parse(output.toString());
+    const result = spawnSync('npx', ['mmx', 'text', 'chat', '--message', `user:${prompt}`, '--output', 'json', '--quiet', '--non-interactive'], { cwd: process.cwd(), timeout: 30000, encoding: 'utf8' });
+    if (result.error || result.status !== 0) return null;
+    const parsed = JSON.parse(result.stdout);
     return parsed.content || parsed.choices?.[0]?.message?.content || null;
   } catch {
     return null;
@@ -492,9 +494,9 @@ async function runSelfImprovePropose(root, options = {}) {
 
   const recentPatches = await readRecentJsonLines(statePath(root, 'patches.jsonl'), 10);
 
-  const diagnosis = diagnoseFailures(failureSummary, recentPatches);
+  const diagnosis = await diagnoseFailures(failureSummary, recentPatches);
 
-  const patch = buildHarnessPatch(diagnosis);
+  const patch = await buildHarnessPatch(diagnosis);
 
   if (!patch || patch.length === 0) {
     return { proposed: false, reason: 'no patch candidate generated', diagnosis };
@@ -617,8 +619,9 @@ Return JSON:
   "suggested_refinements": ["refinement1"]
 }`;
 
+  const config = await loadConfig(root);
   try {
-    const response = await chatCompletion(root, {}, [
+    const response = await chatCompletion(root, config, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ]);
@@ -639,9 +642,10 @@ Patch: ${JSON.stringify(patch)}
 
 Return JSON with {approved: bool, reasoning: string, suggested_refinements: [string]}`;
 
-    const cmd = `npx mmx text chat --message "user:${prompt}" --output json --quiet --non-interactive`;
-    const output = execSync(cmd, { cwd: process.cwd(), timeout: 30000 });
-    const parsed = JSON.parse(output.toString());
+    const { spawnSync } = require('node:child_process');
+    const result = spawnSync('npx', ['mmx', 'text', 'chat', '--message', `user:${prompt}`, '--output', 'json', '--quiet', '--non-interactive'], { cwd: process.cwd(), timeout: 30000, encoding: 'utf8' });
+    if (result.error || result.status !== 0) return null;
+    const parsed = JSON.parse(result.stdout);
     return parsed.content || parsed.choices?.[0]?.message?.content || null;
   } catch {
     return null;

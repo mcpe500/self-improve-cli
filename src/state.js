@@ -2,7 +2,8 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { deepMerge, validateProfile, applyJsonPatch } = require('./profile');
+const { deepMerge, validateProfile } = require('./profile');
+const { appendJsonLine } = require('./json-utils');
 
 const STATE_DIR = '.selfimprove';
 const BASE_PROFILE = 'base.profile.json';
@@ -135,11 +136,6 @@ async function saveOverlay(root, overlay) {
   await writeJson(target, overlay);
 }
 
-async function appendJsonLine(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.appendFile(file, `${JSON.stringify(value)}\n`, 'utf8');
-}
-
 async function appendEvent(root, event) {
   const record = {
     ts: new Date().toISOString(),
@@ -168,11 +164,11 @@ async function appendPatchAudit(root, audit) {
 }
 
 async function rollbackToBackup(root) {
-  const bakPath = statePath(root, OVERLAY_PROFILE + '.bak');
+  const bakPath = statePath(root, OVERLAY_PROFILE + '.bak.0');
   const curPath = statePath(root, OVERLAY_PROFILE);
   if (await exists(bakPath)) {
     await fs.copyFile(bakPath, curPath);
-    return { reverted: true, source: 'backup' };
+    return { reverted: true, source: 'backup.0' };
   }
   return { reverted: false, reason: 'no backup found' };
 }

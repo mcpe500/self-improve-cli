@@ -4,7 +4,7 @@ const readline = require('node:readline');
 const rlPromises = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
 const { compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('./profile');
-const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus } = require('./state');
+const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus, loadMcpConfig, saveMcpConfig } = require('./state');
 const { loadConfig, setConfigValue, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('./config');
 const { chatCompletion } = require('./provider');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secrets');
@@ -12,8 +12,8 @@ const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } 
 const { learnFromMessage, runDemo, runBackgroundReview, recordTaskTrace, scheduleBackgroundReview } = require('./self-improve');
 const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue, reviewQuestion } = require('./ask_gate');
 const { MCPManager, buildMcpToolBridge } = require('./mcp-client');
-const { loadMcpConfig, saveMcpConfig } = require('./state');
 const { discoverSkills, buildSkillsPrompt, getSkillTools, enableSkill, disableSkill } = require('./skills');
+const { stripThinkBlocks, compactJson } = require('./text-utils');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -163,11 +163,6 @@ const TOOL_POLICY_KEYS = {
   delegate_swarm: 'delegate_swarm'
 };
 
-function compactJson(value, limit = 12000) {
-  const text = JSON.stringify(value);
-  return text.length > limit ? `${text.slice(0, limit)}...<truncated>` : text;
-}
-
 function systemPrompt(profile, skillsBlock) {
   let prompt = `${compileProfilePrompt(profile)}\n\nWorkspace:\n- cwd=${process.cwd()}\n- platform=${process.platform}\n- os=${os.type()} ${os.release()}\n- path_separator=${require('node:path').sep}\n\nAgent loop rules:\n- You are self-improve-cli, a lightweight coding agent.\n- Use tool calls when repository facts are needed.\n- For new files, use write_file. Do not use run_command for file creation.\n- Read relevant files before editing existing files.\n- For edits, use edit_file with exact unique old_text.\n- run_command uses spawn with shell=false: no redirection, pipes, heredocs, shell builtins, or compound command strings.\n- Keep final answers concise and include validation run when possible.\n- Do not output <think> blocks or hidden reasoning.\n- Do not claim a command passed unless run_command output proves it.`;
   if (skillsBlock) prompt += skillsBlock;
@@ -308,10 +303,6 @@ function trimHistory(messages, maxHistoryMessages) {
   const system = messages[0];
   const rest = messages.slice(1);
   return [system, ...rest.slice(-maxHistoryMessages)];
-}
-
-function stripThinkBlocks(text) {
-  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 function toolCallName(toolCall) {
@@ -1050,6 +1041,5 @@ module.exports = {
   runAgentTask,
   handleSlashCommand,
   isGitReversibleFileAction,
-  stripThinkBlocks,
   startChat
 };

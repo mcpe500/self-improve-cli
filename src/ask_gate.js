@@ -1,5 +1,7 @@
 'use strict';
 
+const { stripThinkBlocks } = require('./text-utils');
+
 const RISK_TYPES = new Set([
   'clarification',
   'file_write',
@@ -113,10 +115,6 @@ class DeferredQuestionsQueue {
     lines.push('--- End Deferred Questions ---\n');
     return lines.join('\n');
   }
-}
-
-function stripThinkBlocks(text) {
-  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 async function reviewQuestion(root, config, originalPrompt, candidate, options = {}) {

@@ -9,7 +9,8 @@ const { loadConfig, setConfigValue, normalizeConfig, listProviderPresets, connec
 const { writeFileTool, editFileTool } = require('../src/tools');
 const { joinUrl, apiKeyFromConfig } = require('../src/provider');
 const { setProviderApiKey, getProviderApiKey, secretStatus } = require('../src/secrets');
-const { isGitReversibleFileAction, stripThinkBlocks } = require('../src/agent');
+const { isGitReversibleFileAction } = require('../src/agent');
+const { stripThinkBlocks } = require('../src/text-utils');
 
 test('loadConfig creates default config without secret value', async () => {
   const root = await tempRoot();

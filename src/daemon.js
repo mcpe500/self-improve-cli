@@ -142,55 +142,60 @@ async function handleProposeResult(root, result, currentTraceCount, autoPromote,
 
 function startApiServer(root, port) {
   httpServer = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://localhost:${port}`);
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    try {
+      const url = new URL(req.url, `http://localhost:${port}`);
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
 
-    if (req.method === 'GET' && url.pathname === '/status') {
-      const state = await readDaemonState(root);
-      const pid = await readDaemonPid(root);
-      res.writeHead(200);
-      res.end(JSON.stringify({ ...state, pid }, null, 2));
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/candidates') {
-      const { listCandidates } = require('./self-improve');
-      const ids = await listCandidates(root);
-      const candidates = [];
-      for (const id of ids) {
-        try {
-          const scores = await loadCandidateScores(root, id);
-          candidates.push({ id, ...scores });
-        } catch {
-          candidates.push({ id });
-        }
+      if (req.method === 'GET' && url.pathname === '/status') {
+        const state = await readDaemonState(root);
+        const pid = await readDaemonPid(root);
+        res.writeHead(200);
+        res.end(JSON.stringify({ ...state, pid }, null, 2));
+        return;
       }
-      res.writeHead(200);
-      res.end(JSON.stringify(candidates, null, 2));
-      return;
-    }
 
-    if (req.method === 'POST' && url.pathname === '/trigger') {
-      console.log('[daemon] /trigger received — will evaluate on next loop iteration');
-      const state = await readDaemonState(root);
-      await writeDaemonState(root, { ...state, triggered: true });
-      res.writeHead(202);
-      res.end(JSON.stringify({ triggered: true }));
-      return;
-    }
+      if (req.method === 'GET' && url.pathname === '/candidates') {
+        const { listCandidates } = require('./self-improve');
+        const ids = await listCandidates(root);
+        const candidates = [];
+        for (const id of ids) {
+          try {
+            const scores = await loadCandidateScores(root, id);
+            candidates.push({ id, ...scores });
+          } catch {
+            candidates.push({ id });
+          }
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(candidates, null, 2));
+        return;
+      }
 
-    if (req.method === 'POST' && url.pathname === '/stop') {
-      console.log('[daemon] /stop received');
-      running = false;
-      gracefulShutdown(root).catch(() => {});
-      res.writeHead(202);
-      res.end(JSON.stringify({ stopping: true }));
-      return;
-    }
+      if (req.method === 'POST' && url.pathname === '/trigger') {
+        console.log('[daemon] /trigger received — will evaluate on next loop iteration');
+        const state = await readDaemonState(root);
+        await writeDaemonState(root, { ...state, triggered: true });
+        res.writeHead(202);
+        res.end(JSON.stringify({ triggered: true }));
+        return;
+      }
 
-    res.writeHead(404);
-    res.end(JSON.stringify({ error: 'not found' }));
+      if (req.method === 'POST' && url.pathname === '/stop') {
+        console.log('[daemon] /stop received');
+        running = false;
+        gracefulShutdown(root).catch(() => {});
+        res.writeHead(202);
+        res.end(JSON.stringify({ stopping: true }));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'not found' }));
+    } catch (err) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: err.message }));
+    }
   });
 
   httpServer.listen(port, '127.0.0.1', () => {

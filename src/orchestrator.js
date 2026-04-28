@@ -3,8 +3,8 @@
 const { chatCompletion } = require('./provider');
 const { loadConfig } = require('./config');
 const { loadProfiles } = require('./state');
-const { runCommandTool } = require('./tools');
 const { MMX_TOOL_SCHEMAS, MMX_TOOL_HANDLERS } = require('./mmx-tools');
+const { stripThinkBlocks } = require('./text-utils');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 
@@ -34,10 +34,6 @@ Review criteria:
 - Are file modifications safe and correct?
 - Are there missing edge cases or tests?
 - Return ONLY JSON: {"approved": boolean, "feedback": "string", "severity": "none|minor|major|critical", "suggested_fixes": ["string"]}`;
-
-function stripThinkBlocks(text) {
-  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-}
 
 function extractTouchedFiles(messages) {
   const files = new Set();

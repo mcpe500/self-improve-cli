@@ -1,5 +1,7 @@
 'use strict';
 
+const { applyJsonPatch } = require('./json-utils');
+
 const GROWTH_LEVELS = new Set(['none', 'low', 'medium', 'high', 'very_high']);
 const HEAVY_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'target', '.next', '.cache']);
 
@@ -82,68 +84,6 @@ function compileProfilePrompt(profile) {
   }
   lines.push(`Growth: level=${profile.growth.level}; auto_apply=${profile.growth.auto_apply}; max_patch_ops=${profile.growth.max_patch_ops}`);
   return lines.join('\n');
-}
-
-function decodePointerSegment(segment) {
-  return segment.replace(/~1/g, '/').replace(/~0/g, '~');
-}
-
-function parsePointer(path) {
-  if (path === '') return [];
-  if (typeof path !== 'string' || !path.startsWith('/')) throw new Error(`Invalid JSON pointer: ${path}`);
-  return path.slice(1).split('/').map(decodePointerSegment);
-}
-
-function getParent(target, path, createMissing = false) {
-  const segments = parsePointer(path);
-  if (segments.length === 0) return { parent: null, key: null };
-  let node = target;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const segment = segments[i];
-    if (node == null || typeof node !== 'object') throw new Error(`Cannot traverse ${path}`);
-    if (!(segment in node)) {
-      if (!createMissing) throw new Error(`Missing parent for ${path}`);
-      const nextSegment = segments[i + 1];
-      node[segment] = nextSegment === '-' || /^\d+$/.test(nextSegment) ? [] : {};
-    }
-    node = node[segment];
-  }
-  return { parent: node, key: segments[segments.length - 1] };
-}
-
-function applyJsonPatch(document, patch) {
-  if (!Array.isArray(patch)) throw new Error('patch must be an array');
-  const next = clone(document) || {};
-  for (const op of patch) {
-    if (!op || typeof op !== 'object') throw new Error('patch op must be an object');
-    if (!['add', 'replace', 'remove'].includes(op.op)) throw new Error(`Unsupported patch op: ${op.op}`);
-    const { parent, key } = getParent(next, op.path, op.op === 'add');
-    if (parent === null) {
-      if (op.op === 'remove') throw new Error('Cannot remove document root');
-      return clone(op.value);
-    }
-    if (Array.isArray(parent)) {
-      if (op.op === 'add') {
-        if (key === '-') parent.push(clone(op.value));
-        else parent.splice(Number(key), 0, clone(op.value));
-      } else if (op.op === 'replace') {
-        if (!(key in parent)) throw new Error(`Missing path: ${op.path}`);
-        parent[Number(key)] = clone(op.value);
-      } else {
-        if (!(key in parent)) throw new Error(`Missing path: ${op.path}`);
-        parent.splice(Number(key), 1);
-      }
-      continue;
-    }
-    if (op.op === 'add' || op.op === 'replace') {
-      if (op.op === 'replace' && !(key in parent)) throw new Error(`Missing path: ${op.path}`);
-      parent[key] = clone(op.value);
-    } else {
-      if (!(key in parent)) throw new Error(`Missing path: ${op.path}`);
-      delete parent[key];
-    }
-  }
-  return next;
 }
 
 function pathStarts(path, prefixes) {
