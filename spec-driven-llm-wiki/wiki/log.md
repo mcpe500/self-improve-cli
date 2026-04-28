@@ -85,3 +85,15 @@ Created and implemented `spec/007.visible-self-improve-commands.md`. Added `src/
 ## [2026-04-26] handoff | Visible self-improve commands
 
 Wrote `spec/handoff/007.visible-self-improve-commands.md` with validation results, graph blocker, open questions, and next steps.
+
+## [2026-04-28] wiki | Batch wiki expansion — all modules documented
+
+Added 11 component pages: swarm-orchestrator, autonomous-mode-ask-gate, mmx-tools, provider-client, config-manager, profile-engine, state-manager, self-improve-engine, daemon, coding-tools, secrets-storage.
+
+Added 5 decision pages: in-process-subagents, deterministic-policy-before-reviewer, fallback-chain-pattern, json-audit-trail, promise-allsettled-swarm.
+
+Added 5 pattern pages: fallback-chain, worker-pool-sandbox, pareto-frontier, deferred-questions, growth-gate.
+
+Updated wiki/index.md and wiki/overview.md with all new pages.
+
+Rewrote AGENTS.md from 181 to 585 lines: added REVIEW workflow, HANDOVER workflow, Graph Schema, Wikilink Syntax, Wiki Page Conventions, Spec Conventions, Parent Project Integration, Agent-Specific Integrations, Configuration, Failure Recovery, Testing, Log Format sections.
