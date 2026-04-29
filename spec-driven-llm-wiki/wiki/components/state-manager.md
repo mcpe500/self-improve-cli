@@ -2,12 +2,14 @@
 title: "State Manager"
 type: component
 tags: [state, persistence, crud, jsonl]
-last_updated: 2026-04-28
+last_updated: 2026-04-29
 ---
 
 # State Manager
 
 `[[components/state-manager]]` tracks all persistent state under `.selfimprove/` — profiles, event/trace/patch logs, candidates, optimizer state, and daemon lifecycle.
+
+The public import remains `src/state.js`, but implementation is split into focused `[[components/state-modules]]` files.
 
 ## Responsibilities
 
@@ -23,6 +25,16 @@ last_updated: 2026-04-28
 - Daemon lifecycle: `readDaemonState`, `writeDaemonState`, `writeDaemonPid`, `readDaemonPid`, `clearDaemonPid`, `isDaemonRunning` — PID file and state JSON.
 - Report status via `getSelfImproveStatus(root)` and `getStatus(root)` — counts, recent entries, growth config, and file paths.
 - Read JSONL logs via `readAllJsonLines`, `readRecentJsonLines`, `countJsonLines` — with configurable limits.
+- Re-export focused state modules through `src/state.js` for compatibility with existing imports.
+
+## Module Layout
+
+- `src/state.js` — barrel re-export.
+- `src/state/common.js` — constants, path helpers, JSON helpers.
+- `src/state/profile-state.js` — profiles, overlays, MCP config, active skills, growth.
+- `src/state/audit-log.js` — events, traces, patches JSONL.
+- `src/state/candidate-state.js` — optimizer, status, rollback, candidates.
+- `src/state/daemon-state.js` — daemon PID and lifecycle state.
 
 ## File Layout
 
@@ -59,3 +71,4 @@ last_updated: 2026-04-28
 - [[components/profile-engine]]
 - [[components/self-improve-engine]]
 - [[components/daemon]]
+- [[components/state-modules]]

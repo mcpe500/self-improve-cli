@@ -2,7 +2,7 @@
 title: "Project Overview"
 type: synthesis
 tags: [overview]
-last_updated: 2026-04-28
+last_updated: 2026-04-29
 ---
 
 # Project Overview
@@ -18,6 +18,7 @@ Self-improving coding CLI with agentic chat, swarm orchestration, autonomous mod
 - Multi-agent swarm orchestrator: plan → parallel worker+critic → merge.
 - Self-improve pipeline: trace → diagnose → propose patch → critic → sandbox eval → pareto → promote.
 - Background daemon with HTTP API for continuous self-improvement.
+- Refactored module boundaries: slash commands, tool safety, state domains, and daemon API are separated from core loops.
 - JSON audit trail in `.selfimprove/`, no external DB.
 - Growth policy levels control profile patch surface.
 - All LLM features optional; core CLI works without any API key.
@@ -26,6 +27,8 @@ Self-improving coding CLI with agentic chat, swarm orchestration, autonomous mod
 
 - [[components/lightweight-cli-core]]
 - [[components/agent-chat-loop]]
+- [[components/chat-commands]]
+- [[components/tool-safety]]
 - [[components/swarm-orchestrator]]
 - [[components/autonomous-mode-ask-gate]]
 - [[components/mmx-tools]]
@@ -33,8 +36,10 @@ Self-improving coding CLI with agentic chat, swarm orchestration, autonomous mod
 - [[components/config-manager]]
 - [[components/profile-engine]]
 - [[components/state-manager]]
+- [[components/state-modules]]
 - [[components/self-improve-engine]]
 - [[components/daemon]]
+- [[components/daemon-api]]
 - [[components/coding-tools]]
 - [[components/secrets-storage]]
 

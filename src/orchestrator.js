@@ -104,15 +104,17 @@ async function persistSwarmArtifact(root, runId, name, data) {
 async function runFeatureAgent(root, feature, options) {
   const { active } = await loadProfiles(root);
   const config = await loadConfig(root);
-  const { runAgentTask, TOOL_SCHEMAS } = require('./agent');
+  const runAgentTask = options.runAgentTask;
+  const toolSchemas = options.toolSchemas;
+  if (!runAgentTask) throw new Error('runAgentTask is required in options');
 
   const onProgress = options.onProgress || (() => {});
 
   const featurePrompt = `Implement this feature:\nTitle: ${feature.title}\nDescription: ${feature.description}\nDependencies: ${feature.dependencies?.join(', ') || 'none'}\n\nBegin implementation now.`;
 
   const swarmTools = options.enableMmx
-    ? [...TOOL_SCHEMAS, ...MMX_TOOL_SCHEMAS]
-    : TOOL_SCHEMAS;
+    ? [...toolSchemas, ...MMX_TOOL_SCHEMAS]
+    : toolSchemas;
   const swarmHandlers = options.enableMmx
     ? { ...MMX_TOOL_HANDLERS }
     : {};

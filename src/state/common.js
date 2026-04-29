@@ -1,0 +1,56 @@
+'use strict';
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+
+const STATE_DIR = '.selfimprove';
+const BASE_PROFILE = 'base.profile.json';
+const OVERLAY_PROFILE = 'overlay.profile.json';
+const EVENTS_LOG = 'events.jsonl';
+const PATCHES_LOG = 'patches.jsonl';
+const TRACES_LOG = 'traces.jsonl';
+const OPTIMIZER_STATE = 'optimizer.json';
+const DAEMON_STATE = 'daemon.json';
+const DAEMON_PID = 'daemon.pid';
+const MCP_CONFIG = 'mcp.json';
+
+function statePath(root, file = '') {
+  return path.join(root, STATE_DIR, file);
+}
+
+async function exists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJson(file, fallback = undefined) {
+  if (!(await exists(file))) return fallback;
+  const raw = await fs.readFile(file, 'utf8');
+  return JSON.parse(raw);
+}
+
+async function writeJson(file, value) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+module.exports = {
+  STATE_DIR,
+  BASE_PROFILE,
+  OVERLAY_PROFILE,
+  EVENTS_LOG,
+  PATCHES_LOG,
+  TRACES_LOG,
+  OPTIMIZER_STATE,
+  DAEMON_STATE,
+  DAEMON_PID,
+  MCP_CONFIG,
+  statePath,
+  exists,
+  readJson,
+  writeJson
+};

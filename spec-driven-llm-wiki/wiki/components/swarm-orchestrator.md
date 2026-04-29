@@ -2,7 +2,7 @@
 title: "Swarm Orchestrator"
 type: component
 tags: [swarm, orchestrator, parallel, critic]
-last_updated: 2026-04-28
+last_updated: 2026-04-29
 ---
 
 # Swarm Orchestrator
@@ -13,7 +13,7 @@ last_updated: 2026-04-28
 
 - Decompose user prompts into independent features via `planFeatures` using an LLM architect prompt.
 - Execute features in parallel batches with configurable `concurrency` (default 3).
-- Run a worker agent (`runAgentTask` from `[[components/agent-chat-loop]]`) for each feature.
+- Run a worker agent for each feature using injected `options.runAgentTask` from `[[components/agent-chat-loop]]`.
 - Apply a critic reviewer (`runCritic`) after each worker to evaluate correctness, safety, and completeness.
 - Support critic retry loops: if the critic rejects, the worker gets a retry prompt with feedback (configurable via `maxCriticIterations`).
 - Aggregate all feature results via `mergeResults`, classifying outcomes as `completed`, `completed_with_warnings`, or `failed`.
@@ -35,11 +35,12 @@ last_updated: 2026-04-28
 - Features run via `Promise.allSettled` so one failure does not kill the swarm.
 - `planFeatures` requires valid JSON from the LLM; throws on parse failure.
 - Worker agents run in autonomous mode with `maxTurns` from active profile or default 25.
+- `runFeatureAgent` requires `options.runAgentTask`; callers also pass `options.toolSchemas` for base tools.
 - Critic retry is capped by `maxCriticIterations`; default 1 (no retry).
 - Artifacts use `fs.mkdir({ recursive: true })` for swarm directory creation.
 - `stripThinkBlocks` removes `<think/>` blocks from LLM responses before JSON parsing.
 - `extractTouchedFiles` collects file paths from `write_file`, `edit_file`, and `read_file` tool calls in agent messages.
-- `runFeatureAgent` uses dynamic `require('./agent')` to resolve circular dependency at call time.
+- Worker dependency injection avoids a runtime `agent.js` ↔ `orchestrator.js` circular dependency.
 - Supports `AbortSignal` propagation for cancellation.
 
 ## Related

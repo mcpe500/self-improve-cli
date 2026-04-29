@@ -1,24 +1,25 @@
 ---
 title: "Agent Chat Loop"
 type: component
-tags: [chat, provider, tools]
-last_updated: 2026-04-26
+tags: [chat, provider, tools, agent]
+last_updated: 2026-04-29
 ---
 
 # Agent Chat Loop
 
-`[[components/agent-chat-loop]]` tracks interactive and one-shot coding chat support.
+`[[components/agent-chat-loop]]` tracks the agent execution loop, built-in tool schemas, tool-call dispatch, autonomous-mode behavior, and task trace recording.
 
 ## Responsibilities
 
-- Start `sicli chat` REPL or run `sicli chat "prompt"` one-shot tasks.
-- Load active profile from `[[components/lightweight-cli-core]]`.
-- Load `.selfimprove/config.json` provider settings.
-- Call OpenAI-compatible Chat Completions via native `fetch`.
+- Run one-shot tasks through `runAgentTask(root, prompt, options)`.
+- Load active profile from `[[components/lightweight-cli-core]]` and provider config from `[[components/config-manager]]`.
+- Build the system prompt with workspace context and active skill instructions.
+- Call OpenAI-compatible Chat Completions through `[[components/provider-client]]`.
 - Expose local tools as function-call schemas.
-- Enforce profile tool policy: `allow`, `deny`, `ask`.
-- Handle local slash commands before provider calls: `/connect`, `/models`, `/config`, `/help`, `/exit`.
-- Keep session history small and in memory only.
+- Delegate profile tool policy and permission-mode checks to `[[components/tool-safety]]`.
+- Merge MCP and skill tool schemas/handlers into each agent run.
+- Handle autonomous-mode tools: `ask_user`, `task_complete`, and `delegate_swarm`.
+- Record task traces to `.selfimprove/traces.jsonl` and schedule background review.
 
 ## Tools
 
@@ -27,6 +28,9 @@ last_updated: 2026-04-26
 - `run_command`: `spawn` with `shell: false`; no shell redirection/pipes/heredocs.
 - `write_file`: direct UTF-8 file creation/overwrite.
 - `edit_file`: exact unique text replacement.
+- `ask_user`: Don't Ask Gate candidate in autonomous mode.
+- `task_complete`: explicit autonomous completion declaration.
+- `delegate_swarm`: autonomous delegation to `[[components/swarm-orchestrator]]`.
 
 ## Provider Presets
 
@@ -38,18 +42,19 @@ last_updated: 2026-04-26
 
 - API keys stored only in `.selfimprove/secrets.json`, not config.
 - Secret file uses best-effort permissions: directory `0700`, file `0600`.
-- `/config` redacts secrets and shows only `stored_api_key`.
 - No dependency added.
 - No TUI, watcher, indexer, LSP, or embeddings.
-- Chat and tool approvals share one readline instance to avoid duplicate echo.
+- Slash commands and the interactive REPL live in `[[components/chat-commands]]`.
+- Tool approvals and safety review live in `[[components/tool-safety]]`.
 - Tool failures and max-turn stops are logged into `.selfimprove/events.jsonl` and `.selfimprove/patches.jsonl` for self-improvement.
-- Visible self-improve commands: `self-improve status`, `self-improve demo`, `self-improve learn`, `self-improve background-run`, and chat `/self-improve`.
 - Chat task traces are appended to `.selfimprove/traces.jsonl`; background reviewer scans new traces without blocking chat.
-- Permission modes: `secure`, `partial_secure`, `ai_reviewed`, `auto_approve`.
-- `partial_secure` allows only read/search and git-reversible file writes/edits without asking.
-- `ai_reviewed` uses a clean-context reviewer call for action tools and asks user on denial/error.
+- `startChat(root, options)` remains exported for compatibility and delegates to `chat-commands.startChat` with `runAgentTask` injected.
 
 ## Related
 
 - [[components/lightweight-cli-core]]
+- [[components/chat-commands]]
+- [[components/tool-safety]]
+- [[components/mcp-client]]
+- [[components/skills-system]]
 - [[002.interactive-agent-chat-cli]]

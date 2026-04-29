@@ -8,7 +8,7 @@ const { GROWTH_LEVELS, compileProfilePrompt, evaluatePatch, suggestPatchFromEven
 const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus, getStatus } = require('../src/state');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('../src/tools');
 const { loadConfig, setConfigValue, listPermissionModes, setPermissionMode } = require('../src/config');
-const { runAgentTask, startChat } = require('../src/agent');
+const { runAgentTask, TOOL_SCHEMAS, startChat } = require('../src/agent');
 const { learnFromMessage, runDemo, runBackgroundReview, runSelfImprovePropose } = require('../src/self-improve');
 
 function usage() {
@@ -197,7 +197,9 @@ async function main() {
         maxCriticIterations: parseInt(flags['max-critic-iterations'] || '1', 10),
         signal: controller.signal,
         interactive: false,
-        yes: Boolean(flags.yes)
+        yes: Boolean(flags.yes),
+        runAgentTask,
+        toolSchemas: TOOL_SCHEMAS
       });
       printJson(result);
     } catch (error) {

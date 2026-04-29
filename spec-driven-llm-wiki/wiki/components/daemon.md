@@ -2,7 +2,7 @@
 title: "Daemon"
 type: component
 tags: [daemon, background, http, self-improve]
-last_updated: 2026-04-28
+last_updated: 2026-04-29
 ---
 
 # Daemon
@@ -18,8 +18,11 @@ last_updated: 2026-04-28
 - Auto-promote candidates when `autoPromote` is enabled and score meets `autoPromoteThreshold` (default 0.8).
 - Track consecutive errors; trigger `gracefulShutdown` after 5 consecutive failures.
 - Persist daemon state to `.selfimprove/daemon.json` with status, timestamps, and last result.
+- Start the local API server through `[[components/daemon-api]]` and keep lifecycle/shutdown logic in `daemon.js`.
 
 ## HTTP API
+
+Route handling lives in `src/daemon-api.js`.
 
 - `GET /status` — current daemon state and PID.
 - `GET /candidates` — list all improvement candidates with scores.
@@ -34,9 +37,11 @@ last_updated: 2026-04-28
 - Daemon state is immutable history; writes merge into existing state.
 - Graceful shutdown closes HTTP server, writes `stopped` status, clears PID file.
 - No dependency added beyond `[[components/self-improve-engine]]` and `[[components/state-manager]]`.
+- `/stop` is routed through an injected controller (`stop`, `gracefulShutdown`) so the API module does not own daemon globals.
 
 ## Related
 
 - [[components/self-improve-engine]]
 - [[components/state-manager]]
+- [[components/daemon-api]]
 - [[components/agent-chat-loop]]

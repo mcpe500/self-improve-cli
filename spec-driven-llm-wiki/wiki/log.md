@@ -155,3 +155,16 @@ Deduplication:
 - Merged duplicate `state.js` imports in `agent.js`
 
 Tests: 92/92 pass (+15 new tests). 0 failures, 0 regressions.
+
+## [2026-04-29] spec | Architecture refactor completed
+
+Completed `spec/015.architecture-refactor.md` and implemented focused module boundaries:
+- Extracted chat REPL and slash commands from `src/agent.js` to `src/commands/chat-commands.js`.
+- Extracted permission/tool safety from `src/agent.js` to `src/safety/tool-safety.js`.
+- Split monolithic `src/state.js` into `src/state/common.js`, `profile-state.js`, `audit-log.js`, `candidate-state.js`, and `daemon-state.js`, with `src/state.js` as a barrel re-export.
+- Extracted daemon HTTP routes from `src/daemon.js` to `src/daemon-api.js`.
+- Resolved `agent.js` ↔ `orchestrator.js` worker circular dependency by injecting `runAgentTask` and base tool schemas through swarm options.
+
+Updated wiki component pages for agent chat loop, chat commands, tool safety, state manager/state modules, daemon/daemon API, and swarm orchestrator.
+
+Tests: 92/92 pass, 0 failures, 0 regressions.
