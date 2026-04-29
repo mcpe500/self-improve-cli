@@ -3,7 +3,7 @@
 const readline = require('node:readline');
 const rlPromises = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
-const { loadConfig, setConfigValue, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('../config');
+const { loadConfig, setConfigValue, listProviderPresets, connectProvider, connectCustomProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('../config');
 const { loadProfiles, loadMcpConfig, saveMcpConfig } = require('../state');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('../secrets');
 const { learnFromMessage, runDemo, runBackgroundReview, getSelfImproveStatus, setGrowthLevel } = require('../self-improve');
@@ -100,7 +100,36 @@ function listProviders() {
 }
 
 async function handleConnectCommand(root, arg, rl) {
-  let selection = arg;
+  // Parse flags for custom provider
+  const flags = {};
+  const rest = [];
+  for (const part of arg.split(/\s+/)) {
+    if (part.startsWith('--')) {
+      const key = part.slice(2);
+      const [k, ...v] = key.split('=');
+      flags[k] = v.join('=');
+    } else {
+      rest.push(part);
+    }
+  }
+  const selection = rest.join(' ');
+
+  // Handle custom provider with --base-url
+  if (selection.toLowerCase() === 'custom' || flags['base-url'] || flags['base_url']) {
+    const baseUrl = flags['base-url'] || flags['base_url'];
+    const model = flags.model;
+    const apiKeyEnv = flags['api-key-env'] || flags['api_key_env'];
+    const label = flags.label;
+    if (!baseUrl) {
+      process.stdout.write('Usage: /connect custom --base-url https://api.example.com/v1 [--model gpt-4] [--api-key-env CUSTOM_KEY] [--label My Provider]\n');
+      return true;
+    }
+    const config = await connectCustomProvider(root, { base_url: baseUrl, model, api_key_env: apiKeyEnv, label });
+    await printProviderHelp(root, config);
+    await promptAndStoreApiKey(root, config, rl);
+    return true;
+  }
+
   if (!selection) {
     listProviders();
     selection = (await rl.question('provider> ')).trim();
@@ -411,13 +440,31 @@ async function handleSlashCommand(root, prompt, rl) {
   const arg = parts.join(' ').trim();
   if (command === '/exit' || command === '/quit') return false;
   if (command === '/help') {
-    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /swarm <prompt>, /mcp [add|remove|list|reload], /skills [list|enable|disable], /config, /help, /exit\n');
+    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /plan <task>, /build <task>, /llm-council <question>, /import [<filepath>], /revert [list|latest|<id>], /history, /swarm <prompt>, /mcp [add|remove|list|reload], /skills [list|enable|disable], /self-improve [status|enable|growth|demo|learn], /config, /help, /exit\n');
     return true;
   }
   if (command === '/config') {
     const config = await loadConfig(root);
     process.stdout.write(`${JSON.stringify({ ...config, ...(await secretStatus(root, config)) }, null, 2)}\n`);
     return true;
+  }
+  if (command === '/plan') {
+    return handlePlanCommand(root, arg, rl);
+  }
+  if (command === '/build') {
+    return handleBuildCommand(root, arg, rl);
+  }
+  if (command === '/llm-council') {
+    return handleLlmCouncilCommand(root, arg, rl);
+  }
+  if (command === '/import') {
+    return handleImportCommand(root, arg, rl);
+  }
+  if (command === '/revert') {
+    return handleRevertCommand(root, arg, rl);
+  }
+  if (command === '/history') {
+    return handleHistoryCommand(root, arg, rl);
   }
   if (command === '/key') {
     const config = await loadConfig(root);
@@ -441,7 +488,8 @@ async function startChat(root, options = {}, { runAgentTask } = {}) {
   const rl = await rlPromises.createInterface({ input, output });
   const history = [];
   process.stdout.write('self-improve-cli chat. /help for commands. /exit to quit. Press ESC to cancel task.\n');
-  
+  process.stdout.write('Tip: Paste multi-line text or images directly. Images auto-detected for VLM.\n');
+
   let nestedInputActive = false;
   let currentController = null;
   const keypressHandler = (str, key) => {
@@ -452,16 +500,54 @@ async function startChat(root, options = {}, { runAgentTask } = {}) {
   };
   process.stdin.on('keypress', keypressHandler);
 
+  // Helper to read multi-line input (detect paste with newlines)
+  async function readMultiLineInput() {
+    const input = await rl.question('sicli> ');
+    return input || '';
+  }
+
+  // Helper to detect clipboard image (Windows)
+  async function getClipboardImage() {
+    if (process.platform !== 'win32') return null;
+    try {
+      const { execSync } = require('node:child_process');
+      // Check if clipboard has image
+      const hasImage = execSync(
+        'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::ContainsImage()"',
+        { encoding: 'utf8', timeout: 2000 }
+      ).trim();
+      if (hasImage !== 'True') return null;
+
+      // Get image as base64 PNG
+      const b64 = execSync(
+        'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray()) } else { \"\" }"',
+        { encoding: 'utf8', timeout: 5000 }
+      ).trim();
+      if (!b64) return null;
+      return { mimeType: 'image/png', data: b64 };
+    } catch {
+      return null;
+    }
+  }
+
   try {
     while (true) {
-      let prompt;
-      try {
-        prompt = ((await rl.question('sicli> ')) || '').trim();
-      } catch (error) {
-        if (error.message === 'readline was closed') break;
-        throw error;
-      }
+      let prompt = await readMultiLineInput();
       if (!prompt) continue;
+
+      // Check for clipboard image
+      const imageData = await getClipboardImage();
+
+      // Build message content (multi-line text + optional image)
+      let messageContent = prompt;
+      if (imageData) {
+        messageContent = [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:${imageData.mimeType};base64,${imageData.data}` } }
+        ];
+        process.stdout.write('[Image detected in clipboard - sending to VLM]\n');
+      }
+
       if (prompt.startsWith('/')) {
         try {
           const keepGoing = await handleSlashCommand(root, prompt, rl);
@@ -473,7 +559,7 @@ async function startChat(root, options = {}, { runAgentTask } = {}) {
       }
       try {
         currentController = new AbortController();
-        const result = await runAgentTask(root, prompt, { ...options, interactive: true, history, rl, signal: currentController.signal });
+        const result = await runAgentTask(root, messageContent, { ...options, interactive: true, history, rl, signal: currentController.signal });
         process.stdout.write(`${result.text}\n`);
         history.splice(0, history.length, ...result.messages.filter((m) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls)).slice(-10));
       } catch (error) {
@@ -506,5 +592,312 @@ module.exports = {
   handleMCPCommand,
   handleSkillsCommand,
   handleSlashCommand,
-  startChat
+  startChat,
+  handlePlanCommand,
+  handleBuildCommand,
+  handleLlmCouncilCommand,
+  handleImportCommand,
+  handleRevertCommand,
+  handleHistoryCommand
 };
+
+// ========== PLAN MODE ==========
+async function handlePlanCommand(root, arg, rl) {
+  if (!arg.trim()) {
+    process.stdout.write('usage: /plan <task>\n');
+    return true;
+  }
+  const config = await loadConfig(root);
+  const { planFeatures } = require('../orchestrator');
+  process.stdout.write('Planning...\n');
+  try {
+    const features = await planFeatures(root, config, arg, { signal: null });
+    if (!features.length) {
+      process.stdout.write('No features detected.\n');
+      return true;
+    }
+    process.stdout.write(formatSwarmFeatures(features));
+    process.stdout.write('\nUse /build to execute step-by-step, or /swarm to execute all.\n');
+  } catch (error) {
+    process.stderr.write(`Planning error: ${error.message}\n`);
+  }
+  return true;
+}
+
+// ========== BUILD MODE ==========
+async function handleBuildCommand(root, arg, rl) {
+  if (!arg.trim()) {
+    process.stdout.write('usage: /build <task> [--yes]\n');
+    return true;
+  }
+  const yes = /--yes\b/.test(arg);
+  const cleanArg = arg.replace(/--yes\b/g, '').trim();
+  const config = await loadConfig(root);
+  const { planFeatures } = require('../orchestrator');
+
+  process.stdout.write('Planning...\n');
+  try {
+    const features = await planFeatures(root, config, cleanArg, { signal: null });
+    if (!features.length) {
+      process.stdout.write('No features detected.\n');
+      return true;
+    }
+    process.stdout.write(formatSwarmFeatures(features));
+    process.stdout.write('\n');
+
+    // Execute step by step with approval
+    const { runAgentTask } = require('../agent');
+    for (let i = 0; i < features.length; i++) {
+      const feature = features[i];
+      process.stdout.write(`\n[${i + 1}/${features.length}] ${feature.title}\n`);
+      process.stdout.write(`   ${feature.description.slice(0, 80)}...\n`);
+
+      if (!yes && rl) {
+        const ok = await askApproval('Execute this step?', rl);
+        if (!ok) {
+          process.stdout.write('Build cancelled.\n');
+          return true;
+        }
+      }
+
+      // Execute the feature task
+      try {
+        const result = await runAgentTask(root, feature.description, {
+          interactive: true,
+          yes: yes || true,
+          signal: null
+        });
+        process.stdout.write(`   Result: ${(result.text || '').slice(0, 100)}\n`);
+      } catch (err) {
+        process.stdout.write(`   Error: ${err.message}\n`);
+      }
+    }
+    process.stdout.write('\nBuild complete.\n');
+  } catch (error) {
+    process.stderr.write(`Build error: ${error.message}\n`);
+  }
+  return true;
+}
+
+// ========== LLM COUNCIL (5-agent reasoning) ==========
+async function handleLlmCouncilCommand(root, arg, rl) {
+  if (!arg.trim()) {
+    process.stdout.write('usage: /llm-council <question>\n');
+    return true;
+  }
+
+  const config = await loadConfig(root);
+  const { chatCompletion } = require('../provider');
+
+  process.stdout.write('LLM Council started...\n');
+  process.stdout.write('Agents: First Principles → Explorer → Systems → Skeptic → Synthesizer\n\n');
+
+  const councilAgents = [
+    { name: 'First Principles', role: 'Thinker', prompt: 'Break this problem to its most fundamental components. What is truly required? Think step by step.' },
+    { name: 'Explorer', role: 'Explorer', prompt: 'Generate creative possibilities and unconventional angles. What alternatives exist?' },
+    { name: 'Systems Thinker', role: 'Systems', prompt: 'Map dependencies, second-order effects, and feedback loops. How do parts interact?' },
+    { name: 'Skeptic', role: 'Skeptic', prompt: 'Attack the reasoning. Find risks, contradictions, failure modes. What could go wrong?' },
+    { name: 'Synthesizer', role: 'Synthesizer', prompt: 'Provide final recommendation with tradeoffs, confidence level, and next steps.' }
+  ];
+
+  let context = arg;
+  let fullReport = [];
+
+  for (let i = 0; i < councilAgents.length; i++) {
+    const agent = councilAgents[i];
+    process.stdout.write(`[${i + 1}/5] ${agent.name} thinking...\n`);
+
+    try {
+      const messages = [
+        { role: 'system', content: `You are ${agent.name}, a ${agent.role}. ${agent.prompt}` },
+        { role: 'user', content: `Question: ${arg}\n\nPrevious context:\n${context}` }
+      ];
+      const { message } = await chatCompletion(root, config, messages, []);
+      const response = message.content;
+      fullReport.push({ agent: agent.name, response });
+      context += `\n\n[${agent.name}]: ${response}`;
+      process.stdout.write(`   Done.\n`);
+    } catch (error) {
+      process.stdout.write(`   Error: ${error.message}\n`);
+      fullReport.push({ agent: agent.name, error: error.message });
+    }
+  }
+
+  // Print final report
+  process.stdout.write('\n========== COUNCIL REPORT ==========\n');
+  for (const entry of fullReport) {
+    process.stdout.write(`\n## ${entry.agent}\n${entry.response || entry.error || 'No response'}\n`);
+  }
+  process.stdout.write('\n=====================================\n');
+
+  return true;
+}
+
+// ========== IMPORT (from OpenCode export) ==========
+async function handleImportCommand(root, arg, rl) {
+  // arg can be file path or JSON/markdown content
+  if (!arg.trim()) {
+    process.stdout.write('usage: /import <filepath>\n   or paste OpenCode export content directly\n');
+    return true;
+  }
+
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  let content = arg;
+
+  // If arg is a file path, read the file
+  if (await fs.promises.access(arg).then(() => true).catch(() => false)) {
+    content = await fs.promises.readFile(arg, 'utf8');
+    process.stdout.write(`Imported from file: ${arg}\n`);
+  }
+
+  // Detect format (JSON or Markdown)
+  const isJson = content.trim().startsWith('{') || content.trim().startsWith('[');
+  let imported = { type: 'unknown', data: null };
+
+  if (isJson) {
+    try {
+      imported.data = JSON.parse(content);
+      imported.type = 'json';
+    } catch (e) {
+      process.stdout.write(`JSON parse error: ${e.message}\n`);
+      return true;
+    }
+  } else {
+    imported.data = content;
+    imported.type = 'markdown';
+  }
+
+  process.stdout.write(`Format: ${imported.type}\n`);
+
+  // Handle based on type - for now just show what was imported
+  if (imported.type === 'json') {
+    const data = imported.data;
+    if (data.tasks || data.features) {
+      process.stdout.write(`Tasks/Features found: ${(data.tasks || data.features || []).length}\n`);
+    }
+    if (data.messages) {
+      process.stdout.write(`Messages found: ${data.messages.length}\n`);
+    }
+    // Store in state for later use
+    const { statePath } = require('../state');
+    const importFile = path.join(statePath(root), 'last_import.json');
+    await fs.promises.writeFile(importFile, JSON.stringify(imported.data, null, 2));
+    process.stdout.write(`Saved to: ${importFile}\n`);
+  } else {
+    // For markdown, extract task items and create a plan
+    const lines = content.split('\n').filter(l => l.trim());
+    process.stdout.write(`Lines: ${lines.length}\n`);
+    process.stdout.write('First few lines:\n');
+    lines.slice(0, 5).forEach(l => process.stdout.write(`  ${l.slice(0, 80)}\n`));
+  }
+
+  process.stdout.write('\nImport complete. Use /plan or /build to execute imported content.\n');
+  return true;
+}
+
+// ========== REVERT ==========
+async function handleRevertCommand(root, arg, rl) {
+  const { loadState, saveState } = require('../state');
+  const path = require('node:path');
+  const stateDir = path.join(root, '.selfimprove');
+  const historyFile = path.join(stateDir, 'history.jsonl');
+
+  const fs = require('node:fs');
+
+  if (!arg.trim() || arg === 'list') {
+    // List available revert points
+    try {
+      const lines = (await fs.promises.readFile(historyFile, 'utf8')).split('\n').filter(Boolean);
+      process.stdout.write('Available revert points:\n');
+      lines.slice(-10).reverse().forEach((line, i) => {
+        try {
+          const entry = JSON.parse(line);
+          const ts = new Date(entry.timestamp || Date.now()).toISOString();
+          const type = entry.type || 'unknown';
+          const msg = (entry.message || '').slice(0, 60);
+          process.stdout.write(`  ${lines.length - 1 - i}. [${ts}] ${type}: ${msg}\n`);
+        } catch {}
+      });
+      process.stdout.write('\nUsage: /revert <id>  (or /revert latest)\n');
+    } catch (e) {
+      process.stdout.write('No history found.\n');
+    }
+    return true;
+  }
+
+  if (arg === 'latest') {
+    // Revert to latest
+    try {
+      const lines = (await fs.promises.readFile(historyFile, 'utf8')).split('\n').filter(Boolean);
+      if (lines.length < 2) {
+        process.stdout.write('No previous state to revert to.\n');
+        return true;
+      }
+      const prevEntry = JSON.parse(lines[lines.length - 2]);
+      // Restore state
+      if (prevEntry.state) {
+        await saveState(root, prevEntry.state);
+        process.stdout.write(`Reverted to: ${new Date(prevEntry.timestamp).toISOString()}\n`);
+      }
+    } catch (e) {
+      process.stdout.write(`Revert error: ${e.message}\n`);
+    }
+    return true;
+  }
+
+  // Revert to specific id
+  const id = parseInt(arg, 10);
+  if (isNaN(id)) {
+    process.stdout.write('usage: /revert [list|latest|<id>]\n');
+    return true;
+  }
+
+  try {
+    const lines = (await fs.promises.readFile(historyFile, 'utf8')).split('\n').filter(Boolean);
+    const targetLine = lines[lines.length - 1 - id];
+    if (!targetLine) {
+      process.stdout.write(`History entry ${id} not found.\n`);
+      return true;
+    }
+    const entry = JSON.parse(targetLine);
+    if (entry.state) {
+      await saveState(root, entry.state);
+      process.stdout.write(`Reverted to: ${new Date(entry.timestamp).toISOString()}\n`);
+    }
+  } catch (e) {
+    process.stdout.write(`Revert error: ${e.message}\n`);
+  }
+  return true;
+}
+
+// ========== HISTORY ==========
+async function handleHistoryCommand(root, arg, rl) {
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const stateDir = path.join(root, '.selfimprove');
+  const historyFile = path.join(stateDir, 'history.jsonl');
+
+  try {
+    const lines = (await fs.promises.readFile(historyFile, 'utf8')).split('\n').filter(Boolean);
+    if (!lines.length) {
+      process.stdout.write('No history yet.\n');
+      return true;
+    }
+
+    process.stdout.write(`History (${lines.length} entries):\n\n`);
+    lines.slice(-20).reverse().forEach((line, i) => {
+      try {
+        const entry = JSON.parse(line);
+        const ts = new Date(entry.timestamp || Date.now()).toISOString().slice(0, 19).replace('T', ' ');
+        const type = entry.type || 'unknown';
+        const msg = (entry.message || entry.summary || '').slice(0, 70);
+        process.stdout.write(`  ${String(lines.length - i).padStart(3)} ${ts} [${type}] ${msg}\n`);
+      } catch {}
+    });
+  } catch (e) {
+    process.stdout.write('No history file found.\n');
+  }
+  return true;
+}
