@@ -100,14 +100,26 @@ function listProviders() {
 }
 
 async function handleConnectCommand(root, arg, rl) {
-  // Parse flags for custom provider
+  // Parse flags for custom provider (support both --flag=value and --flag value)
   const flags = {};
   const rest = [];
-  for (const part of arg.split(/\s+/)) {
+  const parts = arg.split(/\s+/);
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     if (part.startsWith('--')) {
       const key = part.slice(2);
       const [k, ...v] = key.split('=');
-      flags[k] = v.join('=');
+      if (v.length > 0) {
+        // --flag=value format
+        flags[k] = v.join('=');
+      } else if (i + 1 < parts.length && !parts[i + 1].startsWith('--')) {
+        // --flag value format
+        flags[k] = parts[i + 1];
+        i++;
+      } else {
+        // --flag without value
+        flags[k] = true;
+      }
     } else {
       rest.push(part);
     }
@@ -664,7 +676,7 @@ async function handleBuildCommand(root, arg, rl) {
       try {
         const result = await runAgentTask(root, feature.description, {
           interactive: true,
-          yes: yes || true,
+          yes: yes,
           signal: null
         });
         process.stdout.write(`   Result: ${(result.text || '').slice(0, 100)}\n`);
@@ -799,12 +811,11 @@ async function handleImportCommand(root, arg, rl) {
 
 // ========== REVERT ==========
 async function handleRevertCommand(root, arg, rl) {
-  const { loadState, saveState } = require('../state');
+  const { restoreState } = require('../state');
   const path = require('node:path');
+  const fs = require('node:fs');
   const stateDir = path.join(root, '.selfimprove');
   const historyFile = path.join(stateDir, 'history.jsonl');
-
-  const fs = require('node:fs');
 
   if (!arg.trim() || arg === 'list') {
     // List available revert points
@@ -838,7 +849,7 @@ async function handleRevertCommand(root, arg, rl) {
       const prevEntry = JSON.parse(lines[lines.length - 2]);
       // Restore state
       if (prevEntry.state) {
-        await saveState(root, prevEntry.state);
+        await restoreState(root, prevEntry.state);
         process.stdout.write(`Reverted to: ${new Date(prevEntry.timestamp).toISOString()}\n`);
       }
     } catch (e) {
@@ -863,7 +874,7 @@ async function handleRevertCommand(root, arg, rl) {
     }
     const entry = JSON.parse(targetLine);
     if (entry.state) {
-      await saveState(root, entry.state);
+      await restoreState(root, entry.state);
       process.stdout.write(`Reverted to: ${new Date(entry.timestamp).toISOString()}\n`);
     }
   } catch (e) {

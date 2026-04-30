@@ -359,6 +359,7 @@ async function runAgentTask(root, prompt, options = {}) {
           if (deferredQueue) trace.deferred_questions = deferredQueue.getAll();
           await recordTaskTrace(root, { ...trace, final_text: summary, duration_ms: Date.now() - started });
           await scheduleBackgroundReview(root);
+          await saveState(root).catch(() => {}); // Save snapshot for revert
           const completionResult = { text: summary, messages, status: 'completed', autonomous: isAutonomous, verificationStatus };
           if (deferredQueue) {
             completionResult.deferredQuestions = deferredQueue.getAll();

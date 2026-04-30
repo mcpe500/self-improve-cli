@@ -67,6 +67,19 @@ async function loadState(root) {
   return readJson(stateFile, null);
 }
 
+// Restore state from a history entry (for revert)
+async function restoreState(root, state) {
+  const configFile = statePath(root, 'config.json');
+  const overlayFile = statePath(root, OVERLAY_PROFILE);
+
+  if (state.config) {
+    await writeJson(configFile, state.config);
+  }
+  if (state.overlay) {
+    await writeJson(overlayFile, state.overlay);
+  }
+}
+
 module.exports = {
   STATE_DIR,
   BASE_PROFILE,
@@ -84,5 +97,6 @@ module.exports = {
   readJson,
   writeJson,
   saveState,
-  loadState
+  loadState,
+  restoreState
 };
