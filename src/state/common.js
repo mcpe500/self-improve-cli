@@ -13,6 +13,7 @@ const OPTIMIZER_STATE = 'optimizer.json';
 const DAEMON_STATE = 'daemon.json';
 const DAEMON_PID = 'daemon.pid';
 const MCP_CONFIG = 'mcp.json';
+const HISTORY_LOG = 'history.jsonl';
 
 function statePath(root, file = '') {
   return path.join(root, STATE_DIR, file);
@@ -38,6 +39,47 @@ async function writeJson(file, value) {
   await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+// Save current state snapshot (for revert)
+async function saveState(root) {
+  const stateFile = statePath(root, 'current_state.json');
+  const configFile = statePath(root, 'config.json');
+  const overlayFile = statePath(root, OVERLAY_PROFILE);
+
+  const state = {
+    timestamp: new Date().toISOString(),
+    config: await readJson(configFile, {}),
+    overlay: await readJson(overlayFile, null)
+  };
+
+  await writeJson(stateFile, state);
+
+  // Append to history
+  const historyFile = statePath(root, HISTORY_LOG);
+  const historyEntry = { timestamp: state.timestamp, type: 'snapshot', state };
+  await fs.appendFile(historyFile, JSON.stringify(historyEntry) + '\n');
+
+  return state;
+}
+
+// Load state snapshot
+async function loadState(root) {
+  const stateFile = statePath(root, 'current_state.json');
+  return readJson(stateFile, null);
+}
+
+// Restore state from a history entry (for revert)
+async function restoreState(root, state) {
+  const configFile = statePath(root, 'config.json');
+  const overlayFile = statePath(root, OVERLAY_PROFILE);
+
+  if (state.config) {
+    await writeJson(configFile, state.config);
+  }
+  if (state.overlay) {
+    await writeJson(overlayFile, state.overlay);
+  }
+}
+
 module.exports = {
   STATE_DIR,
   BASE_PROFILE,
@@ -49,8 +91,12 @@ module.exports = {
   DAEMON_STATE,
   DAEMON_PID,
   MCP_CONFIG,
+  HISTORY_LOG,
   statePath,
   exists,
   readJson,
-  writeJson
+  writeJson,
+  saveState,
+  loadState,
+  restoreState
 };

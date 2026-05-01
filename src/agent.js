@@ -1,7 +1,7 @@
 'use strict';
 
 const { compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('./profile');
-const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, loadMcpConfig } = require('./state');
+const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, loadMcpConfig, saveState } = require('./state');
 const { loadConfig } = require('./config');
 const { chatCompletion } = require('./provider');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
@@ -263,10 +263,12 @@ async function runAgentTask(root, prompt, options = {}) {
   if (isAutonomous) {
     systemContent += '\n\nYou are in autonomous mode. Continue working by default. Do not ask the user unnecessary questions. If you genuinely need user authority, use the ask_user tool. When finished, use task_complete. Otherwise, make reasonable decisions and keep going.';
   }
+  // Handle both string prompt and multi-content prompt (text + image array)
+  const userContent = Array.isArray(prompt) ? prompt : String(prompt);
   const messages = [
     { role: 'system', content: systemContent },
     ...(options.history || []),
-    { role: 'user', content: prompt }
+    { role: 'user', content: userContent }
   ];
   const maxTurns = isAutonomous
     ? (options.maxTurns || active.harness?.max_tool_turns_autonomous || config.max_tool_turns_autonomous)
@@ -304,7 +306,7 @@ async function runAgentTask(root, prompt, options = {}) {
     for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
     const toolsToUse = allTools;
-    const assistant = await chatCompletion(root, config, requestMessages, toolsToUse, options.signal);
+    const { message: assistant } = await chatCompletion(root, config, requestMessages, toolsToUse, options.signal);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
     if (!toolCalls.length) {
@@ -316,6 +318,7 @@ async function runAgentTask(root, prompt, options = {}) {
       }
       await recordTaskTrace(root, { ...trace, final_text: text, duration_ms: Date.now() - started });
       await scheduleBackgroundReview(root);
+      await saveState(root).catch((err) => process.stderr.write(`saveState failed: ${err.message}\n`));
       const result = { text, messages, status: 'completed', autonomous: isAutonomous };
       if (deferredQueue) {
         result.deferredQuestions = deferredQueue.getAll();
@@ -356,6 +359,7 @@ async function runAgentTask(root, prompt, options = {}) {
           if (deferredQueue) trace.deferred_questions = deferredQueue.getAll();
           await recordTaskTrace(root, { ...trace, final_text: summary, duration_ms: Date.now() - started });
           await scheduleBackgroundReview(root);
+          await saveState(root).catch((err) => process.stderr.write(`saveState failed: ${err.message}\n`));
           const completionResult = { text: summary, messages, status: 'completed', autonomous: isAutonomous, verificationStatus };
           if (deferredQueue) {
             completionResult.deferredQuestions = deferredQueue.getAll();

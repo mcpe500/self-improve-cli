@@ -548,6 +548,42 @@ throw new Error(`unknown self-improve action: ${action}`);
     throw new Error(`unknown skills action: ${action}. Use list, enable, or disable.`);
   }
 
+  if (command === 'history') {
+    const { handleHistoryCommand } = require('../src/commands/chat-commands');
+    await handleHistoryCommand(root, rest.join(' '), null);
+    return;
+  }
+
+  if (command === 'revert') {
+    const { handleRevertCommand } = require('../src/commands/chat-commands');
+    await handleRevertCommand(root, rest.join(' '), null);
+    return;
+  }
+
+  if (command === 'plan') {
+    const { handlePlanCommand } = require('../src/commands/chat-commands');
+    await handlePlanCommand(root, rest.join(' '), null);
+    return;
+  }
+
+  if (command === 'build') {
+    const { handleBuildCommand } = require('../src/commands/chat-commands');
+    await handleBuildCommand(root, rest.join(' '), null);
+    return;
+  }
+
+  if (command === 'llm-council') {
+    const { handleLlmCouncilCommand } = require('../src/commands/chat-commands');
+    await handleLlmCouncilCommand(root, rest.join(' '), null);
+    return;
+  }
+
+  if (command === 'import') {
+    const { handleImportCommand } = require('../src/commands/chat-commands');
+    await handleImportCommand(root, rest.join(' '), null);
+    return;
+  }
+
   throw new Error(`unknown command: ${command}`);
 }
 

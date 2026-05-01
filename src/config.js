@@ -31,6 +31,14 @@ const PROVIDER_PRESETS = {
     base_url: 'https://api.z.ai/api/coding/paas/v4',
     api_key_env: 'ZAI_API_KEY',
     models: ['GLM-5.1', 'GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5-air']
+  },
+  custom: {
+    id: 'custom',
+    label: 'Custom OpenAI Compatible',
+    provider: 'openai-compatible',
+    base_url: 'https://api.example.com/v1',
+    api_key_env: 'CUSTOM_API_KEY',
+    models: ['custom-model']
   }
 };
 
@@ -153,6 +161,21 @@ async function connectProvider(root, providerRef) {
   });
 }
 
+async function connectCustomProvider(root, options = {}) {
+  const { base_url, model, api_key_env, label } = options;
+  if (!base_url) throw new Error('base_url required for custom provider');
+  const current = await loadConfig(root);
+  return saveConfig(root, {
+    ...current,
+    provider_id: 'custom',
+    provider_label: label || 'Custom OpenAI Compatible',
+    provider: 'openai-compatible',
+    base_url,
+    api_key_env: api_key_env || 'CUSTOM_API_KEY',
+    model: model || 'gpt-4o-mini'
+  });
+}
+
 function modelsForConfig(config) {
   const preset = PROVIDER_PRESETS[config.provider_id];
   if (preset) return [...preset.models];
@@ -194,6 +217,7 @@ module.exports = {
   listProviderPresets,
   findProviderPreset,
   connectProvider,
+  connectCustomProvider,
   modelsForConfig,
   setModel
 };
