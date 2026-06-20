@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "npm test"
+    "check": "npm test",
+    "postinstall": "echo '✅ sicli installed! Run \"sicli init\" to setup workspace or \"sicli tui\" to launch TUI.'"
   },
   "engines": {
     "node": ">=18"
