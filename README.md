@@ -1,6 +1,28 @@
 # self-improve-cli
 
-A lightweight, cross-platform agentic coding CLI with self-improving harness, multi-agent swarm orchestration, autonomous mode, and a don't-ask gate. Zero external AI dependencies for core behavior — LLM optional.
+A lightweight, cross-platform agentic coding CLI with self-improving harness, multi-agent swarm orchestration, autonomous mode, TUI interface, and a don't-ask gate. Zero external AI dependencies for core behavior — LLM optional.
+
+## Quick Install
+
+```bash
+# Option 1: Install globally from npm (recommended)
+npm install -g self-improve-cli
+
+# Option 2: Clone and install
+git clone https://github.com/mcpe500/self-improve-cli.git
+cd self-improve-cli
+npm install
+npm link  # Makes 'sicli' available globally
+
+# Option 3: One-liner install script
+curl -fsSL https://raw.githubusercontent.com/mcpe500/self-improve-cli/main/install.sh | bash
+```
+
+Then initialize your workspace:
+```bash
+sicli init
+sicli tui  # Launch TUI mode
+```
 
 ## Design Goals
 
