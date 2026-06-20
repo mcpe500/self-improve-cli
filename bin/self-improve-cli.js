@@ -15,11 +15,24 @@ function usage() {
   return `sicli - lightweight self-improve coding CLI
 
 Usage:
-  sicli
+  sicli [--tui]
+  sicli tui
   sicli chat [prompt...] [--yes] [--trace] [--dont-ask]
-  sicli config show
+  sicli config show [--local|--global]
   sicli config get <key>
-  sicli config set <key> <value>
+  sicli config set <key> <value> [--local|--global]
+  sicli config path [--local|--global]
+  sicli config validate
+  sicli provider list
+  sicli provider use <id>
+  sicli provider add <id> --base-url <url> [--model <model>] [--api-key-env <ENV>]
+  sicli provider remove <id>
+  sicli provider models
+  sicli provider test
+  sicli superpowers list
+  sicli superpowers enable <name>
+  sicli superpowers disable <name>
+  sicli superpowers preset <safe|balanced|power>
   sicli permissions [secure|partial_secure|ai_reviewed|auto_approve]
   sicli init
   sicli status
@@ -50,10 +63,12 @@ Usage:
   sicli skills disable <name>
 
 Notes:
-  - State lives in .selfimprove/.
-  - Base profile is immutable; overlay profile mutates.
-  - Commands run with shell=false for portability.
-  - Swarm mode splits a prompt into features and runs agents in parallel.
+  - TUI: Terminal User Interface mode (F1 for help)
+  - Config: Local (.selfimprove/) overrides global (~/.config/)
+  - State lives in .selfimprove/
+  - Base profile is immutable; overlay profile mutates
+  - Commands run with shell=false for portability
+  - Swarm mode splits a prompt into features and runs agents in parallel
 `;
 }
 
@@ -118,6 +133,13 @@ async function main() {
     return;
   }
 
+  // TUI mode
+  if (command === 'tui' || command === '--tui' || flags.tui) {
+    const { startTUI } = require('../src/tui');
+    await startTUI(root);
+    return;
+  }
+
   if (!command) {
     await startChat(root, { interactive: true });
     return;
@@ -136,20 +158,140 @@ async function main() {
 
   if (command === 'config') {
     const [action, key, ...valueParts] = rest;
+    const scope = flags.local ? 'local' : flags.global ? 'global' : 'merged';
+    
     if (!action || action === 'show') {
-      printJson(await loadConfig(root));
+      const config = await loadConfig(root, { scope });
+      printJson(config);
       return;
     }
     if (action === 'get') {
-      const config = await loadConfig(root);
+      const config = await loadConfig(root, { scope });
       printJson({ [key]: config[key] });
       return;
     }
     if (action === 'set') {
-      printJson(await setConfigValue(root, key, valueParts.join(' ')));
+      const config = await loadConfig(root, { scope: scope === 'merged' ? 'local' : scope });
+      config[key] = parseConfigValue(valueParts.join(' '));
+      await saveConfig(root, config, { scope: scope === 'merged' ? 'local' : scope });
+      printJson(config);
+      return;
+    }
+    if (action === 'path') {
+      const { getLocalConfigPath, getGlobalConfigPath } = require('../src/config-paths');
+      const path = scope === 'global' ? getGlobalConfigPath() : getLocalConfigPath(root);
+      printJson({ path, scope });
+      return;
+    }
+    if (action === 'validate') {
+      const config = await loadConfig(root, { scope });
+      printJson({ valid: true, config });
       return;
     }
     throw new Error(`unknown config action: ${action}`);
+  }
+
+  if (command === 'provider') {
+    const [action, ...actionArgs] = rest;
+    if (!action || action === 'list') {
+      const { listProviders } = require('../src/config');
+      const providers = await listProviders(root);
+      printJson({ providers });
+      return;
+    }
+    if (action === 'use') {
+      const [providerId] = actionArgs;
+      if (!providerId) throw new Error('usage: provider use <id>');
+      const { connectProvider } = require('../src/config');
+      const config = await connectProvider(root, providerId, { scope: 'local' });
+      printJson({ active_provider: config.active_provider, active_model: config.active_model });
+      return;
+    }
+    if (action === 'add') {
+      const [id] = actionArgs;
+      if (!id || !flags['base-url']) throw new Error('usage: provider add <id> --base-url <url> [--model <model>] [--api-key-env <ENV>]');
+      const { connectCustomProvider } = require('../src/config');
+      const config = await connectCustomProvider(root, {
+        id,
+        base_url: flags['base-url'],
+        model: flags.model,
+        api_key_env: flags['api-key-env'],
+        label: flags.label,
+      }, { scope: 'local' });
+      printJson({ success: true, provider: id });
+      return;
+    }
+    if (action === 'remove') {
+      const [providerId] = actionArgs;
+      if (!providerId) throw new Error('usage: provider remove <id>');
+      const { removeProvider } = require('../src/config');
+      await removeProvider(root, providerId, { scope: 'local' });
+      printJson({ success: true, removed: providerId });
+      return;
+    }
+    if (action === 'models') {
+      const config = await loadConfig(root);
+      const { modelsForConfig } = require('../src/config');
+      const models = modelsForConfig(config);
+      printJson({ models, active: config.active_model });
+      return;
+    }
+    if (action === 'test') {
+      const config = await loadConfig(root);
+      const { chatCompletion } = require('../src/provider');
+      try {
+        await chatCompletion(root, config, [{ role: 'user', content: 'test' }]);
+        printJson({ success: true, message: 'Connection successful' });
+      } catch (error) {
+        printJson({ success: false, error: error.message });
+        process.exit(1);
+      }
+      return;
+    }
+    throw new Error(`unknown provider action: ${action}`);
+  }
+
+  if (command === 'superpowers') {
+    const [action, name] = rest;
+    const { listSuperpowers, applyPreset } = require('../src/superpowers');
+    
+    if (!action || action === 'list') {
+      const config = await loadConfig(root);
+      const powers = listSuperpowers();
+      const status = {};
+      for (const p of powers) {
+        status[p.name] = config.superpowers?.[p.name] ?? p.default;
+      }
+      printJson({ superpowers: status });
+      return;
+    }
+    if (action === 'enable') {
+      if (!name) throw new Error('usage: superpowers enable <name>');
+      const config = await loadConfig(root);
+      if (!config.superpowers) config.superpowers = {};
+      config.superpowers[name] = true;
+      await saveConfig(root, config, { scope: 'local' });
+      printJson({ success: true, [name]: true });
+      return;
+    }
+    if (action === 'disable') {
+      if (!name) throw new Error('usage: superpowers disable <name>');
+      const config = await loadConfig(root);
+      if (!config.superpowers) config.superpowers = {};
+      config.superpowers[name] = false;
+      await saveConfig(root, config, { scope: 'local' });
+      printJson({ success: true, [name]: false });
+      return;
+    }
+    if (action === 'preset') {
+      if (!name) throw new Error('usage: superpowers preset <safe|balanced|power>');
+      const config = await loadConfig(root);
+      config.superpowers = applyPreset(name);
+      await saveConfig(root, config, { scope: 'local' });
+      printJson({ success: true, preset: name });
+      return;
+    }
+    throw new Error(`unknown superpowers action: ${action}`);
   }
 
   if (command === 'chat') {

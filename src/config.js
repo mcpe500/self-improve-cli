@@ -3,6 +3,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { statePath, initWorkspace } = require('./state');
+const { getGlobalConfigPath, getLocalConfigPath, ensureGlobalConfigDir, ensureLocalConfigDir } = require('./config-paths');
+const { migrateLegacyConfig, listBuiltInProviders, getBuiltInProvider, createCustomProvider } = require('./provider-registry');
+const { getDefaultSuperpowers, validateSuperpowers } = require('./superpowers');
 
 const CONFIG_FILE = 'config.json';
 const PERMISSION_MODES = new Set(['secure', 'partial_secure', 'ai_reviewed', 'auto_approve']);
@@ -43,14 +46,10 @@ const PROVIDER_PRESETS = {
 };
 
 function defaultConfig(env = process.env) {
-  const preset = PROVIDER_PRESETS.openai;
   return {
-    provider_id: preset.id,
-    provider_label: preset.label,
-    provider: preset.provider,
-    base_url: env.SICLI_BASE_URL || env.OPENAI_BASE_URL || preset.base_url,
-    api_key_env: env.SICLI_API_KEY_ENV || preset.api_key_env,
-    model: env.SICLI_MODEL || preset.models[0],
+    active_provider: env.SICLI_PROVIDER || 'openai',
+    active_model: env.SICLI_MODEL || 'gpt-4.1-mini',
+    providers: {},
     permission_mode: env.SICLI_PERMISSION_MODE || 'partial_secure',
     temperature: 0.2,
     max_tool_turns: 8,
@@ -58,7 +57,8 @@ function defaultConfig(env = process.env) {
     max_history_messages: 20,
     self_improve_background: true,
     self_improve_review_every: 1,
-    ask_gate_enabled: false
+    ask_gate_enabled: false,
+    superpowers: getDefaultSuperpowers(),
   };
 }
 
@@ -82,13 +82,14 @@ async function writeJson(file, value) {
 }
 
 function normalizeConfig(config) {
-  const merged = { ...defaultConfig(), ...(config || {}) };
-  if (typeof merged.provider_id !== 'string') throw new Error('config.provider_id must be string');
-  if (typeof merged.provider_label !== 'string') throw new Error('config.provider_label must be string');
-  if (typeof merged.provider !== 'string') throw new Error('config.provider must be string');
-  if (typeof merged.base_url !== 'string' || !merged.base_url) throw new Error('config.base_url must be non-empty string');
-  if (typeof merged.api_key_env !== 'string' || !merged.api_key_env) throw new Error('config.api_key_env must be non-empty string');
-  if (typeof merged.model !== 'string' || !merged.model) throw new Error('config.model must be non-empty string');
+  // Migrate legacy config if needed
+  const { config: migrated, migrated: wasMigrated } = migrateLegacyConfig(config || {});
+  const merged = { ...defaultConfig(), ...migrated };
+
+  // Validate new format
+  if (typeof merged.active_provider !== 'string') throw new Error('config.active_provider must be string');
+  if (typeof merged.active_model !== 'string' || !merged.active_model) throw new Error('config.active_model must be non-empty string');
+  if (typeof merged.providers !== 'object') throw new Error('config.providers must be object');
   if (!PERMISSION_MODES.has(merged.permission_mode)) throw new Error(`config.permission_mode must be one of ${Array.from(PERMISSION_MODES).join(', ')}`);
   if (typeof merged.temperature !== 'number') throw new Error('config.temperature must be number');
   if (!Number.isInteger(merged.max_tool_turns) || merged.max_tool_turns < 1) throw new Error('config.max_tool_turns must be positive integer');
@@ -97,19 +98,86 @@ function normalizeConfig(config) {
   if (typeof merged.self_improve_background !== 'boolean') throw new Error('config.self_improve_background must be boolean');
   if (!Number.isInteger(merged.self_improve_review_every) || merged.self_improve_review_every < 1) throw new Error('config.self_improve_review_every must be positive integer');
   if (typeof merged.ask_gate_enabled !== 'boolean') throw new Error('config.ask_gate_enabled must be boolean');
-  return merged;
+
+  // Validate superpowers
+  const spValidation = validateSuperpowers(merged.superpowers);
+  if (!spValidation.valid) throw new Error(`Invalid superpowers: ${spValidation.errors.join(', ')}`);
+
+  return { config: merged, migrated: wasMigrated };
 }
 
-async function loadConfig(root = process.cwd()) {
+/**
+ * Load layered config: CLI flags > local > global > env > defaults
+ * @param {string} root - workspace root
+ * @param {object} options - { scope: 'local'|'global'|'merged', skipMigration: boolean }
+ */
+async function loadConfig(root = process.cwd(), options = {}) {
+  const { scope = 'merged', skipMigration = false } = options;
   await initWorkspace(root);
-  const file = statePath(root, CONFIG_FILE);
-  if (!(await exists(file))) await writeJson(file, defaultConfig());
-  return normalizeConfig(await readJson(file, {}));
+
+  let localConfig = {};
+  let globalConfig = {};
+
+  // Load global config
+  if (scope === 'global' || scope === 'merged') {
+    const globalPath = getGlobalConfigPath();
+    if (await exists(globalPath)) {
+      globalConfig = await readJson(globalPath, {});
+    }
+  }
+
+  // Load local config
+  if (scope === 'local' || scope === 'merged') {
+    const localPath = getLocalConfigPath(root);
+    if (await exists(localPath)) {
+      localConfig = await readJson(localPath, {});
+    }
+  }
+
+  // Merge: local overrides global
+  const rawConfig = scope === 'global' ? globalConfig : scope === 'local' ? localConfig : { ...globalConfig, ...localConfig };
+
+  // Normalize and migrate
+  const { config, migrated } = normalizeConfig(rawConfig);
+
+  // Auto-save migration if needed
+  if (migrated && !skipMigration) {
+    if (scope === 'global' || (scope === 'merged' && Object.keys(localConfig).length === 0)) {
+      await saveConfig(root, config, { scope: 'global', backup: true });
+    } else {
+      await saveConfig(root, config, { scope: 'local', backup: true });
+    }
+  }
+
+  return config;
 }
 
-async function saveConfig(root, config) {
-  const normalized = normalizeConfig(config);
-  await writeJson(statePath(root, CONFIG_FILE), normalized);
+/**
+ * Save config to local or global scope
+ * @param {string} root - workspace root
+ * @param {object} config - config object
+ * @param {object} options - { scope: 'local'|'global', backup: boolean }
+ */
+async function saveConfig(root, config, options = {}) {
+  const { scope = 'local', backup = false } = options;
+  const { config: normalized } = normalizeConfig(config);
+
+  let targetPath;
+  if (scope === 'global') {
+    await ensureGlobalConfigDir();
+    targetPath = getGlobalConfigPath();
+  } else {
+    await ensureLocalConfigDir(root);
+    targetPath = getLocalConfigPath(root);
+  }
+
+  // Backup if requested
+  if (backup && (await exists(targetPath))) {
+    const backupPath = `${targetPath}.bak`;
+    await fs.copyFile(targetPath, backupPath);
+  }
+
+  await writeJson(targetPath, normalized);
   return normalized;
 }
 
@@ -146,46 +214,48 @@ function findProviderPreset(value) {
   return providers.find((preset) => preset.id === query || preset.label.toLowerCase() === query || preset.label.toLowerCase().includes(query)) || null;
 }
 
-async function connectProvider(root, providerRef) {
-  const preset = findProviderPreset(providerRef);
-  if (!preset) throw new Error(`Unknown provider: ${providerRef}`);
+async function connectProvider(root, providerRef, options = {}) {
+  const builtIn = getBuiltInProvider(providerRef);
+  if (!builtIn) throw new Error(`Unknown provider: ${providerRef}`);
   const current = await loadConfig(root);
+  const providers = { ...current.providers };
+  providers[providerRef] = { ...builtIn };
   return saveConfig(root, {
     ...current,
-    provider_id: preset.id,
-    provider_label: preset.label,
-    provider: preset.provider,
-    base_url: preset.base_url,
-    api_key_env: preset.api_key_env,
-    model: preset.models[0]
-  });
+    active_provider: providerRef,
+    active_model: builtIn.default_model,
+    providers,
+  }, options);
 }
 
-async function connectCustomProvider(root, options = {}) {
-  const { base_url, model, api_key_env, label } = options;
-  if (!base_url) throw new Error('base_url required for custom provider');
+async function connectCustomProvider(root, { id, base_url, model, models, api_key_env, label, local }, saveOptions = {}) {
+  if (!id || !base_url) throw new Error('id and base_url required for custom provider');
+  const provider = createCustomProvider({ id, label, base_url, api_key_env, models, default_model: model, local });
   const current = await loadConfig(root);
+  const providers = { ...current.providers };
+  providers[id] = provider;
   return saveConfig(root, {
     ...current,
-    provider_id: 'custom',
-    provider_label: label || 'Custom OpenAI Compatible',
-    provider: 'openai-compatible',
-    base_url,
-    api_key_env: api_key_env || 'CUSTOM_API_KEY',
-    model: model || 'gpt-4o-mini'
-  });
+    active_provider: id,
+    active_model: provider.default_model,
+    providers,
+  }, saveOptions);
 }
 
 function modelsForConfig(config) {
-  const preset = PROVIDER_PRESETS[config.provider_id];
+  const providerId = config.active_provider || config.provider_id;
+  const provider = config.providers?.[providerId] || getBuiltInProvider(providerId);
+  if (provider?.models) return [...provider.models];
+  // Fallback for legacy
+  const preset = PROVIDER_PRESETS[providerId];
   if (preset) return [...preset.models];
-  return [config.model].filter(Boolean);
+  return [config.active_model || config.model].filter(Boolean);
 }
 
-async function setModel(root, model) {
+async function setModel(root, model, options = {}) {
   if (!model) throw new Error('model required');
   const config = await loadConfig(root);
-  return saveConfig(root, { ...config, model });
+  return saveConfig(root, { ...config, active_model: model }, options);
 }
 
 function listPermissionModes() {
@@ -201,6 +271,36 @@ async function setPermissionMode(root, mode) {
   if (!PERMISSION_MODES.has(mode)) throw new Error(`permission mode must be one of ${Array.from(PERMISSION_MODES).join(', ')}`);
   const config = await loadConfig(root);
   return saveConfig(root, { ...config, permission_mode: mode });
+}
+
+async function removeProvider(root, providerId, options = {}) {
+  const config = await loadConfig(root);
+  if (config.active_provider === providerId) {
+    throw new Error('Cannot remove active provider. Switch to another provider first.');
+  }
+  const providers = { ...config.providers };
+  delete providers[providerId];
+  return saveConfig(root, { ...config, providers }, options);
+}
+
+async function listProviders(root) {
+  const config = await loadConfig(root);
+  const configured = Object.keys(config.providers || {}).map(id => ({
+    id,
+    ...config.providers[id],
+    configured: true,
+    active: id === config.active_provider,
+  }));
+  const builtIn = listBuiltInProviders().map(p => ({
+    ...p,
+    configured: !!config.providers?.[p.id],
+    active: p.id === config.active_provider,
+  }));
+  // Merge, prefer configured
+  const merged = new Map();
+  for (const p of builtIn) merged.set(p.id, p);
+  for (const p of configured) merged.set(p.id, p);
+  return Array.from(merged.values());
 }
 
 module.exports = {
@@ -219,5 +319,8 @@ module.exports = {
   connectProvider,
   connectCustomProvider,
   modelsForConfig,
-  setModel
+  setModel,
+  removeProvider,
+  listProviders,
 };
+

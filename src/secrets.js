@@ -50,8 +50,15 @@ async function saveSecrets(root, secrets) {
   return normalized;
 }
 
-function normalizeProviderId(providerId) {
-  const id = String(providerId || '').trim();
+function normalizeProviderId(configOrId) {
+  // Support both old format (provider_id) and new format (active_provider)
+  let id;
+  if (typeof configOrId === 'object' && configOrId !== null) {
+    id = configOrId.active_provider || configOrId.provider_id;
+  } else {
+    id = configOrId;
+  }
+  id = String(id || '').trim();
   if (!id) throw new Error('provider_id required for secret storage');
   return id;
 }
@@ -80,9 +87,10 @@ async function hasProviderApiKey(root, providerId) {
 }
 
 async function secretStatus(root, config) {
+  const providerId = config.active_provider || config.provider_id;
   return {
-    provider_id: config.provider_id,
-    stored_api_key: await hasProviderApiKey(root, config.provider_id),
+    provider_id: providerId,
+    stored_api_key: await hasProviderApiKey(root, providerId),
     secrets_file: statePath(root, SECRETS_FILE)
   };
 }

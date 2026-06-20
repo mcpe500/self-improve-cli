@@ -15,9 +15,11 @@ const { stripThinkBlocks } = require('../src/text-utils');
 test('loadConfig creates default config without secret value', async () => {
   const root = await tempRoot();
   const config = await loadConfig(root);
-  assert.equal(config.provider, 'openai-compatible');
-  assert.equal(config.api_key_env, 'OPENAI_API_KEY');
+  assert.equal(config.active_provider, 'openai');
+  assert.equal(config.active_model, 'gpt-4.1-mini');
   assert.equal(Object.hasOwn(config, 'api_key'), false);
+  assert.equal(typeof config.providers, 'object');
+  assert.equal(typeof config.superpowers, 'object');
 });
 
 test('provider presets include MiniMax and Z.AI coding plans', () => {
@@ -29,25 +31,30 @@ test('provider presets include MiniMax and Z.AI coding plans', () => {
 test('connectProvider selects MiniMax without storing secret', async () => {
   const root = await tempRoot();
   const config = await connectProvider(root, 'minimax');
-  assert.equal(config.provider_label, 'MiniMax Coding Plan');
-  assert.equal(config.api_key_env, 'MINIMAX_API_KEY');
-  assert.equal(config.model, 'MiniMax-M2.7');
+  assert.equal(config.active_provider, 'minimax');
+  const provider = config.providers.minimax;
+  assert.equal(provider.label, 'MiniMax');
+  assert.equal(provider.api_key_env, 'MINIMAX_API_KEY');
+  assert.equal(config.active_model, provider.default_model);
   assert.equal(Object.hasOwn(config, 'api_key'), false);
 });
 
-test('connectProvider selects Z.AI by number and setModel updates model', async () => {
+test('connectProvider selects Z.AI by id and setModel updates model', async () => {
   const root = await tempRoot();
-  const config = await connectProvider(root, '3');
-  assert.equal(config.provider_label, 'Z.AI Coding Plan');
-  assert.deepEqual(modelsForConfig(config), ['GLM-5.1', 'GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5-air']);
-  const next = await setModel(root, 'GLM-5-Turbo');
-  assert.equal(next.model, 'GLM-5-Turbo');
+  const config = await connectProvider(root, 'zai');
+  assert.equal(config.active_provider, 'zai');
+  const provider = config.providers.zai;
+  assert.equal(provider.label, 'Z.AI');
+  const models = modelsForConfig(config);
+  assert.ok(models.includes('z-001'));
+  const next = await setModel(root, 'z-002');
+  assert.equal(next.active_model, 'z-002');
 });
 
 test('local provider secret stores key outside config', async () => {
   const root = await tempRoot();
   const config = await connectProvider(root, 'minimax');
-  await setProviderApiKey(root, config.provider_id, 'sk-test-secret');
+  await setProviderApiKey(root, config.active_provider, 'sk-test-secret');
   assert.equal(await getProviderApiKey(root, 'minimax'), 'sk-test-secret');
   assert.deepEqual(await secretStatus(root, config), {
     provider_id: 'minimax',
@@ -61,7 +68,7 @@ test('local provider secret stores key outside config', async () => {
 test('apiKeyFromConfig prefers stored secret over env fallback', async () => {
   const root = await tempRoot();
   const config = await connectProvider(root, 'zai');
-  await setProviderApiKey(root, config.provider_id, 'stored-key');
+  await setProviderApiKey(root, config.active_provider, 'stored-key');
   assert.equal(await apiKeyFromConfig(root, config, { ZAI_API_KEY: 'env-key' }), 'stored-key');
 });
 
@@ -84,10 +91,10 @@ test('permission modes are listed, validated, and persisted', async () => {
 
 test('setConfigValue persists typed config values', async () => {
   const root = await tempRoot();
-  await setConfigValue(root, 'model', 'test-model');
+  await setConfigValue(root, 'active_model', 'test-model');
   await setConfigValue(root, 'temperature', '0.7');
   const config = await loadConfig(root);
-  assert.equal(config.model, 'test-model');
+  assert.equal(config.active_model, 'test-model');
   assert.equal(config.temperature, 0.7);
 });
 

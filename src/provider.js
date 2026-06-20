@@ -1,6 +1,7 @@
 'use strict';
 
 const { getProviderApiKey } = require('./secrets');
+const { getBuiltInProvider } = require('./provider-registry');
 
 function joinUrl(baseUrl, suffix) {
   return `${baseUrl.replace(/\/+$/, '')}/${suffix.replace(/^\/+/, '')}`;
@@ -15,20 +16,32 @@ function anySignal(...signals) {
 }
 
 async function apiKeyFromConfig(root, config, env = process.env) {
-  const stored = await getProviderApiKey(root, config.provider_id);
+  // New format
+  const providerId = config.active_provider || config.provider_id;
+  const provider = config.providers?.[providerId] || getBuiltInProvider(providerId);
+  const apiKeyEnv = provider?.api_key_env || config.api_key_env;
+
+  const stored = await getProviderApiKey(root, providerId);
   if (stored) return stored;
-  const key = env[config.api_key_env];
+  const key = env[apiKeyEnv];
   if (key) return key;
-  throw new Error(`Missing API key for ${config.provider_label || config.provider_id}. Run /connect or /key, or set env ${config.api_key_env}.`);
+  throw new Error(`Missing API key for ${provider?.label || providerId}. Run /connect or /key, or set env ${apiKeyEnv}.`);
 }
 
 async function chatCompletion(root, config, messages, tools = [], signal) {
-  if (config.provider !== 'openai-compatible') throw new Error(`Unsupported provider: ${config.provider}`);
+  // Get provider config
+  const providerId = config.active_provider || config.provider_id;
+  const provider = config.providers?.[providerId] || getBuiltInProvider(providerId);
+  const providerType = provider?.type || config.provider;
+  const baseUrl = provider?.base_url || config.base_url;
+  const model = config.active_model || config.model;
+
+  if (providerType !== 'openai-compatible') throw new Error(`Unsupported provider: ${providerType}`);
   const timeoutMs = (config.timeout_ms) || 30000;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const combinedSignal = signal ? anySignal(signal, controller.signal) : controller.signal;
-  const response = await fetch(joinUrl(config.base_url, 'chat/completions'), {
+  const response = await fetch(joinUrl(baseUrl, 'chat/completions'), {
     signal: combinedSignal,
     method: 'POST',
     headers: {
@@ -36,7 +49,7 @@ async function chatCompletion(root, config, messages, tools = [], signal) {
       authorization: `Bearer ${await apiKeyFromConfig(root, config)}`
     },
     body: JSON.stringify({
-      model: config.model,
+      model,
       temperature: config.temperature,
       messages,
       tools: tools.length ? tools : undefined,
