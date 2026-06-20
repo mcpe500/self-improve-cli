@@ -42,6 +42,18 @@ sicli
 
 ## File Map
 
+## New Files (TUI & Config System)
+
+| File | Purpose |
+|------|---------|
+| `src/tui.js` | Terminal UI using blessed library |
+| `src/config-paths.js` | Cross-platform config path resolution |
+| `src/provider-registry.js` | Built-in and custom provider definitions |
+| `src/superpowers.js` | Feature gate system with presets |
+| `README_TUI.md` | Complete TUI documentation |
+
+## Core Files
+
 | File | Purpose |
 |------|---------|
 | `bin/self-improve-cli.js` | CLI entrypoint. Dispatches all commands. |
@@ -73,7 +85,113 @@ node bin/self-improve-cli.js profile --prompt
 # Optional install
 npm link
 sicli status
+
+# Launch TUI mode
+sicli tui
+# or
+sicli --tui
 ```
+
+## TUI Mode (NEW)
+
+sicli now includes a Terminal User Interface for interactive management:
+
+- **F1**: Help
+- **F2**: Provider menu (OpenAI, MiniMax, Z.AI, Ollama, custom)
+- **F3**: Config menu (local/global)
+- **F4**: MCP servers
+- **F5**: Skills
+- **F6**: Superpowers (feature toggles)
+- **F7**: Swarm orchestration
+
+See [README_TUI.md](./README_TUI.md) for full TUI documentation.
+
+## Provider System
+
+### Built-in Providers
+
+- **OpenAI**: `https://api.openai.com/v1`
+- **MiniMax**: `https://api.minimax.chat/v1`
+- **Z.AI**: `https://api.z.ai/v1`
+- **Ollama (local)**: `http://localhost:11434/v1`
+- **LM Studio (local)**: `http://localhost:1234/v1`
+- **vLLM (local)**: `http://localhost:8000/v1`
+- **OpenRouter**: `https://openrouter.ai/api/v1`
+
+### Provider Management
+
+```bash
+# List providers
+sicli provider list
+
+# Switch provider
+sicli provider use ollama
+
+# Add custom OpenAI-compatible provider
+sicli provider add my-provider \
+  --base-url https://api.example.com/v1 \
+  --model gpt-4 \
+  --api-key-env MY_API_KEY
+
+# Test connection
+sicli provider test
+
+# List/switch models
+sicli provider models
+```
+
+### Config: Local vs Global
+
+**Priority**: CLI flags > Local > Global > Env > Defaults
+
+```bash
+# View merged config
+sicli config show
+
+# View specific scope
+sicli config show --local
+sicli config show --global
+
+# Set config
+sicli config set temperature 0.7 --local
+sicli config set active_model gpt-4o --global
+
+# Get config paths
+sicli config path --local   # .selfimprove/config.json
+sicli config path --global  # ~/.config/self-improve-cli/config.json (Linux)
+                            # ~/Library/Application Support/... (macOS)
+                            # %APPDATA%/... (Windows)
+```
+
+## Superpowers (Feature Gates)
+
+Toggle features on/off:
+
+```bash
+# List current state
+sicli superpowers list
+
+# Enable/disable individual
+sicli superpowers enable autonomous
+sicli superpowers disable swarm
+
+# Apply preset
+sicli superpowers preset safe      # Read-only, no autonomous
+sicli superpowers preset balanced  # Moderate features
+sicli superpowers preset power     # All features
+```
+
+**Available Superpowers**:
+- `chat`: Interactive chat
+- `tools`: File/shell operations
+- `self_improve`: Self-improvement pipeline
+- `swarm`: Multi-agent orchestration
+- `skills`: Plugin system
+- `mcp`: Model Context Protocol
+- `autonomous`: Autonomous mode (don't-ask gate)
+- `planning`: Task planning/decomposition
+- `history`: History tracking
+- `vision`: Image input (model-dependent)
 
 ## Chat Mode
 
@@ -85,7 +203,7 @@ sicli
 
 # Inside chat:
 sicli> /connect minimax
-sicli> /models MiniMax-M2.7
+sicli> /models
 sicli> /key
 ```
 
