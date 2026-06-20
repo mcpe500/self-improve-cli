@@ -1,0 +1,47 @@
+{
+  "name": "self-improve-cli",
+  "version": "0.2.0",
+  "description": "Lightweight self-improving agentic coding CLI prototype.",
+  "license": "MIT",
+  "bin": {
+    "sicli": "bin/self-improve-cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test",
+    "postinstall": "echo '✅ sicli installed! Run \"sicli init\" to setup workspace or \"sicli tui\" to launch TUI.'"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "cli",
+    "agent",
+    "agentic",
+    "ai",
+    "coding",
+    "tui",
+    "terminal",
+    "self-improving",
+    "autonomous",
+    "llm",
+    "openai",
+    "swarm",
+    "multi-agent",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mcpe500/self-improve-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mcpe500/self-improve-cli/issues"
+  },
+  "homepage": "https://github.com/mcpe500/self-improve-cli#readme",
+  "author": "mcpe500",
+  "license": "MIT",
+  "dependencies": {
+    "blessed": "^0.1.81"
+  }
+}
