@@ -343,6 +343,7 @@ class TUI {
     const action = cmd.toLowerCase();
 
     try {
+      // Built-in commands
       if (action === 'help') this.showHelp();
       else if (action === 'provider') this.showProviderMenu();
       else if (action === 'config') this.showConfigMenu();
@@ -355,7 +356,8 @@ class TUI {
       else if (action === 'build') await this.switchToBuildMode();
       else if (action === 'exit') this.exit();
       else {
-        this.showMessage(`Unknown command: /${action}. Try /help`, 'error');
+        // Try custom command
+        await this.tryCustomCommand(action, args);
       }
     } catch (error) {
       this.showMessage(error.message, 'error');
@@ -363,7 +365,53 @@ class TUI {
     this.screen.render();
   }
 
-  showCommandPalette() {
+  async tryCustomCommand(name, args) {
+    const { loadCustomCommand, executeCustomCommand } = require('./commands/custom-commands');
+    
+    try {
+      const command = await loadCustomCommand(this.root, name);
+      if (!command) {
+        this.showMessage(`Unknown command: /${name}. Try /help or create custom command`, 'error');
+        return;
+      }
+
+      this.showMessage(`Running custom command: /${name}`, 'info');
+      const result = await executeCustomCommand(this.root, name, args);
+      
+      // Show what the command will do
+      this.showMessage(`Prompt: ${result.prompt.slice(0, 200)}${result.prompt.length > 200 ? '...' : ''}`, 'info');
+      
+      // Switch mode if specified
+      if (result.agent === 'plan' && this.currentMode !== 'plan') {
+        await this.switchToPlanMode();
+      } else if (result.agent === 'build' && this.currentMode !== 'build') {
+        await this.switchToBuildMode();
+      }
+
+      // Execute the prompt
+      const spinner = this.showLoadingIndicator(`Executing /${name}...`);
+      this.screen.render();
+
+      try {
+        const { runAgentTask } = require('./agent');
+        const taskResult = await runAgentTask(this.root, result.prompt, {
+          interactive: false,
+          yes: true,
+          trace: false,
+        });
+        spinner.destroy();
+        this.showMessage(taskResult.text || 'Command completed', 'agent');
+      } catch (error) {
+        spinner.destroy();
+        throw error;
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async showCommandPalette() {
+    // Built-in commands
     const commands = [
       { cmd: '/help', desc: 'Show help' },
       { cmd: '/mode plan', desc: 'Switch to Plan mode (read-only)' },
@@ -376,6 +424,20 @@ class TUI {
       { cmd: '/swarm', desc: 'Swarm orchestration' },
       { cmd: '/exit', desc: 'Exit TUI' },
     ];
+
+    // Add custom commands
+    try {
+      const { discoverCustomCommands } = require('./commands/custom-commands');
+      const customCommands = await discoverCustomCommands(this.root);
+      for (const custom of customCommands) {
+        commands.push({
+          cmd: `/${custom.name}`,
+          desc: custom.frontmatter.description || 'Custom command',
+        });
+      }
+    } catch (error) {
+      // Silently ignore if custom commands can't be loaded
+    }
 
     const items = commands.map(c => `${c.cmd.padEnd(20)} ${c.desc}`);
 
