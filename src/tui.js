@@ -194,9 +194,13 @@ class TUI {
     this.screen.key(['F7'], () => this.showSwarmMenu());
     this.screen.key(['F8'], () => this.showThemeMenu());
     this.screen.key(['F9'], () => this.showExportImportMenu());
-    this.screen.key(['tab'], async () => {
+    
+    // Tab switches mode, Ctrl+K opens command palette, Ctrl+P opens provider picker
+    this.inputBox.key(['tab'], async () => {
       await this.toggleMode();
     });
+    this.screen.key(['C-k'], () => this.showCommandPalette());
+    this.screen.key(['C-p'], () => this.showProviderPicker());
   }
 
   async detectGitBranch() {
@@ -339,6 +343,97 @@ class TUI {
     this.screen.render();
   }
 
+  showCommandPalette() {
+    const commands = [
+      { cmd: '/help', desc: 'Show help' },
+      { cmd: '/mode plan', desc: 'Switch to Plan mode (read-only)' },
+      { cmd: '/mode build', desc: 'Switch to Build mode' },
+      { cmd: '/provider', desc: 'Provider menu' },
+      { cmd: '/config', desc: 'Config menu' },
+      { cmd: '/mcp', desc: 'MCP servers menu' },
+      { cmd: '/skills', desc: 'Skills menu' },
+      { cmd: '/powers', desc: 'Superpowers menu' },
+      { cmd: '/swarm', desc: 'Swarm orchestration' },
+      { cmd: '/exit', desc: 'Exit TUI' },
+    ];
+
+    const items = commands.map(c => `${c.cmd.padEnd(20)} ${c.desc}`);
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '70%',
+      height: '60%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ' Command Palette (Ctrl+K) ',
+      keys: true,
+      vi: true,
+      mouse: true,
+      items,
+      search: true,
+    });
+
+    list.on('select', async (item, index) => {
+      const command = commands[index].cmd;
+      list.destroy();
+      await this.handleSlashCommand(command);
+      this.screen.render();
+    });
+
+    list.focus();
+    this.screen.key('escape', () => {
+      list.destroy();
+      this.screen.unkey('escape');
+    });
+  }
+
+  showProviderPicker() {
+    const providers = listBuiltInProviders();
+    const items = providers.map(p => {
+      const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
+      const local = p.local ? ' (local)' : '';
+      return `${p.label.padEnd(25)}${local}${active}`;
+    });
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '60%',
+      height: '60%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ' Provider Picker (Ctrl+P) ',
+      keys: true,
+      vi: true,
+      mouse: true,
+      items,
+    });
+
+    list.on('select', async (item, index) => {
+      const provider = providers[index];
+      list.destroy();
+      this.config.active_provider = provider.id;
+      if (provider.default_model) {
+        this.config.active_model = provider.default_model;
+      }
+      await saveConfig(this.root, this.config, { scope: 'local' });
+      this.updateHeader();
+      this.showMessage(`Switched to ${provider.label}`, 'success');
+      this.screen.render();
+    });
+
+    list.focus();
+    this.screen.key('escape', () => {
+      list.destroy();
+      this.screen.unkey('escape');
+    });
+  }
+
   showHelp() {
     const help = blessed.message({
       parent: this.screen,
@@ -361,19 +456,35 @@ class TUI {
   F5          Skills menu (enable/disable skills)
   F6          Superpowers menu (toggle features)
   F7          Swarm menu (multi-agent orchestration)
-  Escape      Return to chat
+  F8          Theme selector
+  F9          Export/import config
+  Tab         Switch Plan/Build modes
+  Ctrl+K      Command palette
+  Ctrl+P      Provider picker
+  Escape      Return to chat / close dialog
   Ctrl+C      Exit TUI
   Enter       Send message/submit
 
+{bold}Input Prefixes:{/bold}
+  /command       Slash command (e.g., /help, /mode plan)
+  !command       Run shell command (e.g., !git status)
+
 {bold}Slash Commands:{/bold}
   /help              Show help
-  /provider          Switch provider
-  /config            View/edit config
-  /mcp               Manage MCP servers
-  /skills            Manage skills
-  /powers            Toggle superpowers
-  /swarm <prompt>    Run swarm orchestration
+  /mode <plan|build> Switch mode
+  /plan              Switch to Plan mode
+  /build             Switch to Build mode
+  /provider          Provider menu
+  /config            Config menu
+  /mcp               MCP servers menu
+  /skills            Skills menu
+  /powers            Superpowers menu
+  /swarm <prompt>    Swarm orchestration
   /exit              Exit TUI
+
+{bold}Modes:{/bold}
+  PLAN   Read-only mode for safe exploration and analysis
+  BUILD  Implementation mode with edit/write permissions
 
 {bold}Press Escape to close{/bold}
 `;
