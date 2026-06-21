@@ -96,8 +96,90 @@ sicli
 
 ## Quick Start
 
+### 1. Launch TUI
+
 ```bash
-# No API key needed
+# Start interactive terminal UI
+sicli
+# or explicitly
+sicli tui
+```
+
+The TUI opens with:
+- **Header**: Shows workspace, git branch, provider, model, mode (PLAN/BUILD), permission level
+- **Chat panel**: Conversation history with agent
+- **Input box**: Type prompts, slash commands, or shell commands
+- **Status bar**: Keyboard shortcuts reminder
+
+### 2. Choose Your Mode
+
+self-improve-cli has two primary modes inspired by OpenCode:
+
+**PLAN Mode** (read-only, safe for exploration):
+- Analyze codebase
+- Propose changes without editing
+- Explore and understand
+- Switch: Press `Tab` or type `/plan`
+
+**BUILD Mode** (implementation):
+- Edit and write files
+- Run commands
+- Apply changes
+- Switch: Press `Tab` or type `/build`
+
+The mode is shown in the header with color coding:
+- `PLAN` in cyan = read-only
+- `BUILD` in green = can edit
+
+### 3. Discover Features
+
+Press `Ctrl+K` for the **command palette** — filterable list of all commands with descriptions.
+
+Press `Ctrl+P` for the **provider picker** — quick switch between OpenAI, Ollama, local models, etc.
+
+Press `F1` for full help with all keyboard shortcuts.
+
+### 4. Examples
+
+**Explore in Plan mode:**
+```
+Tab  # Switch to PLAN if not already
+Analyze this codebase and suggest improvements
+```
+
+**Run shell commands:**
+```
+!git status
+!npm test
+!ls -la src/
+```
+
+**Switch provider:**
+```
+Ctrl+P  # Opens provider picker
+# or
+/provider
+```
+
+**Use slash commands:**
+```
+/mode plan       # Switch to Plan mode
+/mode build      # Switch to Build mode  
+/config          # Open config menu
+/mcp             # Manage MCP servers
+/skills          # Enable/disable skills
+/help            # Show help
+```
+
+**Regular chat:**
+```
+Fix the bug in src/auth.js where tokens expire too early
+```
+
+### 5. CLI Mode (No API Key Needed)
+
+```bash
+# No API key needed for basic operations
 npm test
 node bin/self-improve-cli.js init
 node bin/self-improve-cli.js status
@@ -114,19 +196,34 @@ sicli tui
 sicli --tui
 ```
 
-## TUI Mode (NEW)
+## TUI Mode (NEW — OpenCode-Inspired DX)
 
-sicli now includes a Terminal User Interface for interactive management:
+sicli features a full-featured Terminal User Interface with:
 
+### Core Features
+- **Plan/Build Modes**: Safe exploration (Plan) vs implementation (Build)
+- **Command Palette**: Press `Ctrl+K` to discover all commands
+- **Provider Picker**: Press `Ctrl+P` for quick provider switching
+- **Shell Integration**: Type `!git status` to run shell commands
+- **Smart Header**: Always shows workspace, git branch, provider, model, mode, permission
+- **Keyboard-First**: Tab to switch modes, arrow keys for history, tab for command completion
+
+### Keyboard Shortcuts
+- **Tab**: Switch Plan/Build modes
+- **Ctrl+K**: Command palette (filterable)
+- **Ctrl+P**: Provider picker
 - **F1**: Help
-- **F2**: Provider menu (OpenAI, MiniMax, Z.AI, Ollama, custom)
+- **F2**: Provider menu (detailed)
 - **F3**: Config menu (local/global)
 - **F4**: MCP servers
 - **F5**: Skills
 - **F6**: Superpowers (feature toggles)
 - **F7**: Swarm orchestration
+- **F8**: Theme selector
+- **F9**: Export/import config
+- **↑/↓**: Command history (100 buffer)
 
-See [README_TUI.md](./README_TUI.md) for full TUI documentation.
+See [README_TUI.md](./README_TUI.md) for full TUI documentation and [docs/opencode-benchmark.md](./docs/opencode-benchmark.md) for design rationale.
 
 ## Provider System
 
