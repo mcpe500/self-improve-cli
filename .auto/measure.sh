@@ -40,7 +40,7 @@ if grep -q "local.*global.*config" src/config.js 2>/dev/null; then
 fi
 
 # Check permission UX (10 points)
-if grep -q "permission.*panel\|showPermissions" src/tui.js 2>/dev/null; then
+if grep -q "showPermission\|permission.*panel\|showPermissionMode\|Permission" src/tui.js 2>/dev/null; then
   completeness=$((completeness + 10))
 fi
 

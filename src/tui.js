@@ -1822,6 +1822,51 @@ class TUI {
     });
   }
 
+  async showPermissionPanel() {
+    const { listPermissionModes } = require('./config');
+    const currentMode = this.config?.permission_mode || 'unknown';
+    const modes = listPermissionModes();
+
+    const content = `{bold}Current Permission Mode: {green-fg}${currentMode}{/green-fg}{/bold}
+
+{bold}Available Modes:{/bold}
+${modes.map(m => {
+  const desc = m === 'secure' ? 'Most restrictive - all edits require approval' :
+               m === 'partial_secure' ? 'Read/append allowed, edits require approval' :
+               m === 'ai_reviewed' ? 'AI reviews decisions, asks for high-risk' :
+               m === 'auto_approve' ? 'All actions auto-approved (use with caution)' : '';
+  const marker = m === currentMode ? ' {green-fg}← ACTIVE{/green-fg}' : '';
+  return `  {bold}${m}{/bold}: ${desc}${marker}`;
+}).join('\n')}
+
+{bold}Mode Effects:{/bold}
+  • {cyan-fg}secure{/cyan-fg}:     read=allow  write=ask   edit=ask   run=ask
+  • {cyan-fg}partial{/cyan-fg}:    read=allow  write=ask   edit=ask   run=allow
+  • {cyan-fg}ai_reviewed{/cyan-fg}: read=allow  write=allow edit=ask   run=allow
+  • {cyan-fg}auto_approve{/cyan-fg}: read=allow  write=allow edit=allow run=allow
+
+Press Escape to close`;
+
+    const panel = blessed.box({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '75%',
+      height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
+      label: ' Permissions ',
+      content,
+    });
+
+    panel.focus();
+    this.screen.key('escape', () => {
+      panel.destroy();
+      this.screen.unkey('escape');
+    });
+  }
+
   async showDiagnosticsMenu() {
     const { runTests, formatDiagnostics } = require('./diagnostics');
     
