@@ -74,6 +74,11 @@ if [ -f "src/file-reference.js" ]; then
   completeness=$((completeness + 5))
 fi
 
+# Check undo/redo snapshots (5 points)
+if [ -f "src/snapshot.js" ]; then
+  completeness=$((completeness + 5))
+fi
+
 # Check backward compat (5 points)
 if [ -f "test/backward-compat.test.js" ]; then
   completeness=$((completeness + 5))

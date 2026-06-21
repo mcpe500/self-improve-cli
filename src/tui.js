@@ -203,6 +203,7 @@ class TUI {
     });
     this.screen.key(['C-k'], () => this.showCommandPalette());
     this.screen.key(['C-p'], () => this.showProviderPicker());
+    this.screen.key(['C-z'], async () => { await this.handleUndo(); });
   }
 
   async detectGitBranch() {
@@ -370,6 +371,7 @@ class TUI {
       else if (action === 'build') await this.switchToBuildMode();
       else if (action === 'exit') this.exit();
       else if (action === 'diagnostics' || action === 'diag') this.showDiagnosticsMenu();
+      else if (action === 'undo') await this.handleUndo();
       else {
         // Try custom command
         await this.tryCustomCommand(action, args);
@@ -1739,6 +1741,22 @@ class TUI {
       list.destroy();
       this.screen.unkey('escape');
     });
+  }
+
+  async handleUndo() {
+    const { undo, listSnapshots } = require('./snapshot');
+    const snaps = await listSnapshots(this.root);
+    if (snaps.length === 0) {
+      this.showMessage('No snapshots to undo', 'info');
+      return;
+    }
+    const result = await undo(this.root);
+    if (result.ok) {
+      this.showMessage(result.message, 'success');
+    } else {
+      this.showMessage(`Undo failed: ${result.error}`, 'error');
+    }
+    this.screen.render();
   }
 
   async showDiagnosticsMenu() {
