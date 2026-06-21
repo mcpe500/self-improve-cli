@@ -84,6 +84,11 @@ if [ -f "src/agents/index.js" ]; then
   completeness=$((completeness + 5))
 fi
 
+# Check plugin hooks (5 points)
+if [ -f "src/plugins.js" ]; then
+  completeness=$((completeness + 5))
+fi
+
 # Check backward compat (5 points)
 if [ -f "test/backward-compat.test.js" ]; then
   completeness=$((completeness + 5))
