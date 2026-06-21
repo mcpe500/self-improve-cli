@@ -229,6 +229,22 @@ class TUI {
     );
   }
 
+  showLoadingIndicator(message = 'Working...') {
+    const loading = blessed.loading({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: 'shrink',
+      height: 'shrink',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
+    });
+    loading.load(message);
+    this.screen.render();
+    return loading;
+  }
+
   showMessage(message, type = 'info') {
     const timestamp = new Date().toLocaleTimeString();
     const prefix = type === 'error' ? '{red-fg}ERROR{/red-fg}' :
@@ -257,7 +273,9 @@ class TUI {
 
     // Regular chat
     this.showMessage(input, 'user');
-    this.showMessage('Processing...', 'info');
+    
+    // Show loading indicator
+    const spinner = this.showLoadingIndicator('Agent is thinking...');
     this.screen.render();
 
     try {
@@ -268,8 +286,10 @@ class TUI {
         yes: true,
         trace: false,
       });
+      spinner.destroy();
       this.showMessage(result.text || 'Task completed', 'agent');
     } catch (error) {
+      spinner.destroy();
       this.showMessage(error.message, 'error');
     }
     this.screen.render();
