@@ -726,6 +726,22 @@ throw new Error(`unknown self-improve action: ${action}`);
     return;
   }
 
+  if (command === 'serve') {
+    const { createServer } = require('../src/server');
+    const port = parseInt(flags.port || '3848', 10);
+    const server = await createServer(root, port);
+    console.log(`[sicli] Server listening on http://127.0.0.1:${port}`);
+    console.log('[sicli] Endpoints: GET /status /config /agents /sessions /session?id=X /export?id=X');
+    console.log('[sicli]          POST /sessions /message /run');
+    console.log('[sicli] Press Ctrl+C to stop');
+    // Keep alive until signal
+    await new Promise((resolve) => {
+      process.on('SIGINT', () => { server.close(); resolve(); });
+      process.on('SIGTERM', () => { server.close(); resolve(); });
+    });
+    return;
+  }
+
   throw new Error(`unknown command: ${command}`);
 }
 
