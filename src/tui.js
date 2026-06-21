@@ -267,6 +267,18 @@ class TUI {
       return;
     }
 
+    // @file reference handling
+    if (input.includes('@')) {
+      const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
+      const result = await attachFileContent(this.root, input);
+      if (result.attached.length > 0 || result.missing.length > 0) {
+        const summary = formatAttachmentSummary(result);
+        if (summary) this.showMessage(summary, 'info');
+        input = result.prompt;
+        this.screen.render();
+      }
+    }
+
     // Slash commands
     if (input.startsWith('/')) {
       await this.handleSlashCommand(input);

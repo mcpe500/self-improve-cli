@@ -69,6 +69,11 @@ if [ -f "src/commands/custom-commands.js" ]; then
   completeness=$((completeness + 10))
 fi
 
+# Check @file reference (5 points)
+if [ -f "src/file-reference.js" ]; then
+  completeness=$((completeness + 5))
+fi
+
 # Check backward compat (5 points)
 if [ -f "test/backward-compat.test.js" ]; then
   completeness=$((completeness + 5))
