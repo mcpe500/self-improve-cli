@@ -204,6 +204,7 @@ class TUI {
     this.screen.key(['C-k'], () => this.showCommandPalette());
     this.screen.key(['C-p'], () => this.showProviderPicker());
     this.screen.key(['C-z'], async () => { await this.handleUndo(); });
+    this.screen.key(['C-a'], () => this.showAgentPicker());
   }
 
   async detectGitBranch() {
@@ -270,14 +271,37 @@ class TUI {
 
     // @file reference handling
     if (input.includes('@')) {
-      const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
-      const result = await attachFileContent(this.root, input);
-      if (result.attached.length > 0 || result.missing.length > 0) {
-        const summary = formatAttachmentSummary(result);
-        if (summary) this.showMessage(summary, 'info');
-        input = result.prompt;
-        this.screen.render();
+      // Try @agent mention first (single word right after @ at start)
+      const { parseAgentMention } = require('./agents');
+      const mention = parseAgentMention(input);
+      if (mention.agent) {
+        const { getAgent } = require('./agents');
+        const agent = getAgent(mention.agent, this.config || {});
+        if (agent) {
+          this.showMessage(`→ @${agent.name}: ${agent.description}`, 'info');
+          this.currentMode = agent.mode;
+          this.updateHeader();
+          input = mention.text;
+        } else {
+          // Not an agent, try @file
+          const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
+          const result = await attachFileContent(this.root, input);
+          if (result.attached.length > 0 || result.missing.length > 0) {
+            const summary = formatAttachmentSummary(result);
+            if (summary) this.showMessage(summary, 'info');
+            input = result.prompt;
+          }
+        }
+      } else {
+        const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
+        const result = await attachFileContent(this.root, input);
+        if (result.attached.length > 0 || result.missing.length > 0) {
+          const summary = formatAttachmentSummary(result);
+          if (summary) this.showMessage(summary, 'info');
+          input = result.prompt;
+        }
       }
+      this.screen.render();
     }
 
     // Slash commands
@@ -1757,6 +1781,45 @@ class TUI {
       this.showMessage(`Undo failed: ${result.error}`, 'error');
     }
     this.screen.render();
+  }
+
+  showAgentPicker() {
+    const { listAllAgents } = require('./agents');
+    const agents = listAllAgents(this.config || {});
+    const items = agents.map(a => {
+      const mode = a.mode === 'plan' ? '[PLAN]' : '[BUILD]';      const custom = a.custom ? ' (custom)' : '';      return `${a.name.padEnd(12)} ${mode}  ${a.description}${custom}`;
+    });
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '80%',
+      height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ' Agent Picker (Ctrl+A) ',
+      keys: true,
+      vi: true,
+      mouse: true,
+      items,
+    });
+
+    list.on('select', async (item, index) => {
+      const agent = agents[index];
+      list.destroy();
+      this.currentMode = agent.mode;
+      this.updateHeader();
+      this.showMessage(`Switched to @${agent.name}: ${agent.description}`, 'success');
+      this.screen.render();
+    });
+
+    list.focus();
+    this.screen.key('escape', () => {
+      list.destroy();
+      this.screen.unkey('escape');
+    });
   }
 
   async showDiagnosticsMenu() {
