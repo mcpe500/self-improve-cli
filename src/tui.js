@@ -195,6 +195,7 @@ class TUI {
     this.screen.key(['F8'], () => this.showSessionsMenu());
     this.screen.key(['F9'], () => this.showThemeMenu());
     this.screen.key(['F10'], () => this.showExportImportMenu());
+    this.screen.key(['F11'], () => this.showDiagnosticsMenu());
     
     // Tab switches mode, Ctrl+K opens command palette, Ctrl+P opens provider picker
     this.inputBox.key(['tab'], async () => {
@@ -356,6 +357,7 @@ class TUI {
       else if (action === 'plan') await this.switchToPlanMode();
       else if (action === 'build') await this.switchToBuildMode();
       else if (action === 'exit') this.exit();
+      else if (action === 'diagnostics' || action === 'diag') this.showDiagnosticsMenu();
       else {
         // Try custom command
         await this.tryCustomCommand(action, args);
@@ -424,6 +426,7 @@ class TUI {
       { cmd: '/powers', desc: 'Superpowers menu' },
       { cmd: '/swarm', desc: 'Swarm orchestration' },
       { cmd: '/exit', desc: 'Exit TUI' },
+      { cmd: '/diagnostics', desc: 'Run diagnostics (tests/lint)' },
     ];
 
     // Add custom commands
@@ -1724,6 +1727,79 @@ class TUI {
       list.destroy();
       this.screen.unkey('escape');
     });
+  }
+
+  async showDiagnosticsMenu() {
+    const { runTests, formatDiagnostics } = require('./diagnostics');
+    
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '80%',
+      height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ' Diagnostics (F11) ',
+      keys: true,
+      vi: true,
+      items: [
+        'Run Tests (npm test)',
+        'Run TypeCheck (tsc)',
+        'Run Lint (eslint)',
+        'Clear Results',
+        'Cancel'
+      ]
+    });
+
+    list.on('select', async (item, index) => {
+      if (index === 4) {
+        list.destroy();
+        return;
+      }
+      
+      list.destroy();
+      this.showMessage('Running diagnostics...', 'info');
+      this.screen.render();
+
+      try {
+        const result = await runTests(this.root);
+        const output = formatDiagnostics(result.diagnostics);
+        
+        const diagBox = blessed.box({
+          parent: this.screen,
+          top: 'center',
+          left: 'center',
+          width: '90%',
+          height: '80%',
+          tags: true,
+          border: { type: 'line' },
+          style: { fg: 'white', bg: 'black', border: { fg: result.passed ? 'green' : 'red' } },
+          label: ` Diagnostics - ${result.passed ? 'PASSED' : 'FAILED'} (${result.diagnostics.length} errors) `,
+          scrollable: true,
+          alwaysScroll: true,
+          keys: true,
+          vi: true,
+          content: output
+        });
+
+        this.screen.key(['escape', 'q'], () => {
+          diagBox.destroy();
+          this.screen.unkey('escape');
+          this.screen.unkey('q');
+        });
+
+        diagBox.focus();
+        this.screen.render();
+      } catch (error) {
+        this.showMessage(`Diagnostics failed: ${error.message}`, 'error');
+        this.screen.render();
+      }
+    });
+
+    list.focus();
+    this.screen.render();
   }
 
   switchToChat() {
