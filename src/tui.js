@@ -14,6 +14,7 @@ const { discoverSkills, enableSkill, disableSkill } = require('./skills');
 const { loadProfiles } = require('./state');
 const { hasProviderApiKey } = require('./secrets');
 const { startChat } = require('./agent');
+const { MODES, getDefaultMode, switchMode, getModeDisplay } = require('./modes');
 
 class TUI {
   constructor(root, options = {}) {
@@ -24,6 +25,8 @@ class TUI {
     this.chatHistory = [];
     this.config = null;
     this.running = false;
+    this.currentMode = null; // Will be set from config
+    this.gitBranch = null; // Will be detected
   }
 
   async init() {
@@ -39,6 +42,8 @@ class TUI {
     this.commandHistory = [];
     this.historyIndex = -1;
     this.currentTheme = this.options.theme || 'default';
+    this.currentMode = getDefaultMode(this.config);
+    this.gitBranch = await this.detectGitBranch();
 
     this.createLayout();
     this.bindKeys();
@@ -189,15 +194,34 @@ class TUI {
     this.screen.key(['F7'], () => this.showSwarmMenu());
     this.screen.key(['F8'], () => this.showThemeMenu());
     this.screen.key(['F9'], () => this.showExportImportMenu());
+    this.screen.key(['tab'], async () => {
+      await this.toggleMode();
+    });
+  }
+
+  async detectGitBranch() {
+    try {
+      const fs = require('node:fs/promises');
+      const path = require('node:path');
+      const gitHead = path.join(this.root, '.git', 'HEAD');
+      const content = await fs.readFile(gitHead, 'utf8');
+      const match = content.match(/ref: refs\/heads\/(.+)/);
+      return match ? match[1].trim() : 'detached';
+    } catch {
+      return null;
+    }
   }
 
   updateHeader() {
     const provider = this.config?.active_provider || 'unknown';
     const model = this.config?.active_model || 'unknown';
-    const mode = this.config?.permission_mode || 'unknown';
+    const permMode = this.config?.permission_mode || 'unknown';
     const cwd = process.cwd().split(/[\\/]/).pop() || process.cwd();
+    const modeDisplay = getModeDisplay(this.currentMode);
+    const gitPart = this.gitBranch ? ` [${this.gitBranch}]` : '';
+    
     this.header.setContent(
-      `{center}{bold}sicli{/bold} | ${cwd} | ${provider} / ${model} | ${mode}{/center}`
+      `{center}{bold}sicli{/bold} | ${cwd}${gitPart} | ${provider}/${model} | {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg} | ${permMode}{/center}`
     );
   }
 
@@ -215,6 +239,12 @@ class TUI {
   }
 
   async handleInput(input) {
+    // Shell command with ! prefix
+    if (input.startsWith('!')) {
+      await this.handleShellCommand(input.slice(1).trim());
+      return;
+    }
+
     // Slash commands
     if (input.startsWith('/')) {
       await this.handleSlashCommand(input);
@@ -241,6 +271,49 @@ class TUI {
     this.screen.render();
   }
 
+  async handleShellCommand(cmd) {
+    if (!cmd) {
+      this.showMessage('Usage: !command [args...]', 'error');
+      return;
+    }
+
+    // Check permission in Plan mode
+    const { checkToolPermission } = require('./modes');
+    const perm = checkToolPermission('run_command', this.currentMode, this.config?.permission_mode === 'auto_approve' ? { run_command: 'allow' } : {});
+    
+    this.showMessage(`$ ${cmd}`, 'info');
+    this.screen.render();
+
+    try {
+      const { execFile } = require('node:child_process');
+      const args = cmd.split(/\s+/);
+      const command = args[0];
+      const cmdArgs = args.slice(1);
+      
+      await new Promise((resolve, reject) => {
+        execFile(command, cmdArgs, {
+          cwd: this.root,
+          timeout: 30000,
+          maxBuffer: 1024 * 1024,
+          shell: false,
+        }, (error, stdout, stderr) => {
+          if (error) {
+            if (stdout) this.showMessage(stdout.trim().slice(0, 2000), 'info');
+            if (stderr) this.showMessage(stderr.trim().slice(0, 2000), 'error');
+            reject(error);
+          } else {
+            if (stdout) this.showMessage(stdout.trim().slice(0, 2000), 'success');
+            if (stderr) this.showMessage(stderr.trim().slice(0, 500), 'info');
+            resolve();
+          }
+        });
+      });
+    } catch (error) {
+      this.showMessage(`Command failed: ${error.message}`, 'error');
+    }
+    this.screen.render();
+  }
+
   async handleSlashCommand(input) {
     const [cmd, ...args] = input.slice(1).split(/\s+/);
     const action = cmd.toLowerCase();
@@ -253,6 +326,9 @@ class TUI {
       else if (action === 'skills') this.showSkillsMenu();
       else if (action === 'powers' || action === 'superpowers') this.showSuperpowersMenu();
       else if (action === 'swarm') this.showSwarmMenu();
+      else if (action === 'mode') this.handleModeCommand(args);
+      else if (action === 'plan') await this.switchToPlanMode();
+      else if (action === 'build') await this.switchToBuildMode();
       else if (action === 'exit') this.exit();
       else {
         this.showMessage(`Unknown command: /${action}. Try /help`, 'error');
@@ -1249,6 +1325,42 @@ class TUI {
       form.destroy();
       this.screen.unkey('escape');
     });
+  }
+
+  async handleModeCommand(args) {
+    const mode = args[0]?.toLowerCase();
+    if (mode === 'plan') {
+      await this.switchToPlanMode();
+    } else if (mode === 'build') {
+      await this.switchToBuildMode();
+    } else {
+      this.showMessage('Usage: /mode <plan|build>', 'error');
+    }
+  }
+
+  async switchToPlanMode() {
+    this.currentMode = MODES.PLAN;
+    const display = getModeDisplay(this.currentMode);
+    this.showMessage(`Switched to ${display.label} mode: ${display.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
+  }
+
+  async switchToBuildMode() {
+    this.currentMode = MODES.BUILD;
+    const display = getModeDisplay(this.currentMode);
+    this.showMessage(`Switched to ${display.label} mode: ${display.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
+  }
+
+  async toggleMode() {
+    const result = switchMode(this.currentMode);
+    this.currentMode = result.mode;
+    const display = getModeDisplay(this.currentMode);
+    this.showMessage(`Switched to ${display.label} mode: ${result.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
   }
 
   switchToChat() {

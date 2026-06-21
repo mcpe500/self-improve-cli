@@ -112,7 +112,9 @@ fi
 new_tests=0
 for f in test/*.test.js; do
   if [ -f "$f" ]; then
-    new_tests=$((new_tests + $(grep -c "^test(" "$f" 2>/dev/null || echo 0)))
+    count=$(grep -c "^test(" "$f" 2>/dev/null || true)
+    count=${count:-0}
+    new_tests=$((new_tests + count))
   fi
 done
 
