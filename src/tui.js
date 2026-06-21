@@ -192,8 +192,9 @@ class TUI {
     this.screen.key(['F5'], () => this.showSkillsMenu());
     this.screen.key(['F6'], () => this.showSuperpowersMenu());
     this.screen.key(['F7'], () => this.showSwarmMenu());
-    this.screen.key(['F8'], () => this.showThemeMenu());
-    this.screen.key(['F9'], () => this.showExportImportMenu());
+    this.screen.key(['F8'], () => this.showSessionsMenu());
+    this.screen.key(['F9'], () => this.showThemeMenu());
+    this.screen.key(['F10'], () => this.showExportImportMenu());
     
     // Tab switches mode, Ctrl+K opens command palette, Ctrl+P opens provider picker
     this.inputBox.key(['tab'], async () => {
@@ -1554,6 +1555,175 @@ class TUI {
     this.showMessage(`Switched to ${display.label} mode: ${result.description}`, 'success');
     this.updateHeader();
     this.screen.render();
+  }
+
+  async showSessionsMenu() {
+    const { listSessions, createSession, loadSession, deleteSession, exportToMarkdown, getActiveSessionId, setActiveSessionId } = require('./sessions');
+    
+    const sessions = await listSessions(this.root);
+    const activeId = await getActiveSessionId(this.root);
+    
+    const items = [
+      '+ New Session',
+      ...sessions.map(s => {
+        const active = s.id === activeId ? ' [ACTIVE]' : '';
+        const date = new Date(s.updated).toLocaleString();
+        return `${s.title}${active} (${s.messageCount} msgs, ${date})`;
+      }),
+      'Export Active Session',
+      'Delete Session',
+      'Cancel',
+    ];
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '80%',
+      height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ' Sessions (F8) ',
+      keys: true,
+      vi: true,
+      mouse: true,
+      items,
+    });
+
+    list.on('select', async (item, index) => {
+      if (index === items.length - 1) {
+        // Cancel
+        list.destroy();
+        return;
+      }
+
+      if (index === 0) {
+        // New session
+        list.destroy();
+        const session = await createSession(this.root, {
+          title: `Session ${new Date().toLocaleString()}`,
+          mode: this.currentMode,
+          provider: this.config?.active_provider,
+          model: this.config?.active_model,
+        });
+        await setActiveSessionId(this.root, session.id);
+        this.showMessage(`Created new session: ${session.id}`, 'success');
+        this.screen.render();
+        return;
+      }
+
+      if (index === sessions.length + 1) {
+        // Export
+        list.destroy();
+        if (!activeId) {
+          this.showMessage('No active session to export', 'error');
+          return;
+        }
+        try {
+          const markdown = await exportToMarkdown(this.root, activeId);
+          const fs = require('node:fs/promises');
+          const path = require('node:path');
+          const filename = `session-${activeId}-${Date.now()}.md`;
+          await fs.writeFile(path.join(this.root, filename), markdown);
+          this.showMessage(`Exported to ${filename}`, 'success');
+        } catch (error) {
+          this.showMessage(`Export failed: ${error.message}`, 'error');
+        }
+        this.screen.render();
+        return;
+      }
+
+      if (index === sessions.length + 2) {
+        // Delete
+        list.destroy();
+        // Show delete picker
+        await this.showDeleteSessionPicker();
+        return;
+      }
+
+      // Resume session
+      const session = sessions[index - 1];
+      list.destroy();
+      await setActiveSessionId(this.root, session.id);
+      this.showMessage(`Resumed session: ${session.title}`, 'success');
+      
+      // Load messages into chat
+      const loaded = await loadSession(this.root, session.id);
+      if (loaded && loaded.messages) {
+        this.chatHistory = [];
+        for (const msg of loaded.messages) {
+          const timestamp = new Date(msg.timestamp).toLocaleTimeString();
+          const role = msg.role === 'user' ? 'user' : 'agent';
+          this.showMessage(msg.content, role);
+        }
+      }
+      this.screen.render();
+    });
+
+    list.focus();
+    this.screen.key('escape', () => {
+      list.destroy();
+      this.screen.unkey('escape');
+    });
+  }
+
+  async showDeleteSessionPicker() {
+    const { listSessions, deleteSession, getActiveSessionId } = require('./sessions');
+    const sessions = await listSessions(this.root);
+    const activeId = await getActiveSessionId(this.root);
+
+    if (sessions.length === 0) {
+      this.showMessage('No sessions to delete', 'info');
+      return;
+    }
+
+    const items = sessions.map(s => {
+      const active = s.id === activeId ? ' [ACTIVE - cannot delete]' : '';
+      return `${s.title}${active}`;
+    });
+    items.push('Cancel');
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '70%',
+      height: '60%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'red' } },
+      label: ' Delete Session ',
+      keys: true,
+      vi: true,
+      mouse: true,
+      items,
+    });
+
+    list.on('select', async (item, index) => {
+      if (index === items.length - 1) {
+        list.destroy();
+        return;
+      }
+
+      const session = sessions[index];
+      if (session.id === activeId) {
+        list.destroy();
+        this.showMessage('Cannot delete active session', 'error');
+        return;
+      }
+
+      list.destroy();
+      await deleteSession(this.root, session.id);
+      this.showMessage(`Deleted session: ${session.title}`, 'success');
+      this.screen.render();
+    });
+
+    list.focus();
+    this.screen.key('escape', () => {
+      list.destroy();
+      this.screen.unkey('escape');
+    });
   }
 
   switchToChat() {
