@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * TUI mode using blessed - Terminal User Interface for sicli
- * Provides interactive chat, config management, provider selection, etc.
+ * TUI mode using blessed — Terminal User Interface for sicli
+ * OpenCode-inspired: slash commands, clean footer, stable input handling.
  */
 
 const blessed = require('blessed');
@@ -25,17 +25,19 @@ class TUI {
     this.chatHistory = [];
     this.config = null;
     this.running = false;
-    this.currentMode = null; // Will be set from config
-    this.gitBranch = null; // Will be detected
+    this.currentMode = null;
+    this.gitBranch = null;
+    this.processing = false;
+    this.uiMode = 'input'; // 'input' or 'modal'
   }
 
   async init() {
     this.screen = blessed.screen({
       smartCSR: true,
-      title: 'sicli - Self-Improving CLI',
+      title: 'sicli — Self-Improving CLI',
       autoPadding: true,
       warnings: false,
-      mouse: true, // Enable mouse support
+      mouse: true,
     });
 
     this.config = await loadConfig(this.root);
@@ -49,579 +51,505 @@ class TUI {
     this.bindKeys();
     this.updateHeader();
     this.applyTheme();
-    this.showMessage('Welcome to sicli TUI. Press F1 for help, Ctrl+C to exit.');
+    this.log('Welcome to sicli TUI. Type /help for commands, Ctrl+C to exit.');
     this.screen.render();
   }
+
+  // ─── Layout ───────────────────────────────────────────────────────
 
   createLayout() {
     // Header
     this.header = blessed.box({
-      top: 0,
-      left: 0,
-      width: '100%',
-      height: 3,
+      top: 0, left: 0, width: '100%', height: 3,
       tags: true,
       border: { type: 'line' },
       style: { fg: 'white', bg: 'blue', border: { fg: '#8700af' } },
-      content: '{center}sicli - Loading...{/center}',
+      content: '{center}sicli — Loading...{/center}',
     });
     this.screen.append(this.header);
 
-    // Main chat area
+    // Chat area
     this.chatBox = blessed.box({
-      top: 3,
-      left: 0,
-      width: '100%',
-      height: '100%-7',
+      top: 3, left: 0, width: '100%', height: '100%-7',
       tags: true,
       border: { type: 'line' },
       style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
       scrollable: true,
       alwaysScroll: true,
-      keys: true,
-      vi: true,
       scrollbar: { ch: ' ', track: { bg: 'grey' }, style: { inverse: true } },
     });
     this.screen.append(this.chatBox);
 
-    // Input box
-    this.inputBox = blessed.textarea({
-      bottom: 0,
-      left: 0,
-      width: '100%',
-      height: 3,
+    // Status bar — minimal, OpenCode-style
+    this.statusBar = blessed.box({
+      bottom: 3, left: 0, width: '100%', height: 1,
+      tags: true,
+      style: { fg: 'black', bg: 'green' },
+      content: ' Enter: send | /help: commands | Tab: mode | ↑↓: history | Ctrl+C: quit',
+    });
+    this.screen.append(this.statusBar);
+
+    // Input — use textbox (not textarea) for reliable Enter/submit behavior.
+    // Do NOT set keys:true or vi:true — inputOnFocus already handles character input.
+    this.inputBox = blessed.textbox({
+      bottom: 0, left: 0, width: '100%', height: 3,
       tags: true,
       border: { type: 'line' },
       style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
       inputOnFocus: true,
-      keys: true,
-      vi: true,
       mouse: true,
     });
     this.screen.append(this.inputBox);
 
-    // Status bar
-    this.statusBar = blessed.box({
-      bottom: 3,
-      left: 0,
-      width: '100%',
-      height: 1,
-      tags: true,
-      style: { fg: 'black', bg: 'green' },
-      content: ' F1:Help F2:Provider F3:Config F4:MCP F5:Skills F6:Powers F8:Theme F9:Export/Import | ↑↓:History Tab:Complete',
-    });
-    this.screen.append(this.statusBar);
-
-    // Enable mouse events on interactive elements
-    this.chatBox.on('click', () => {
-      this.chatBox.focus();
-      this.screen.render();
-    });
-
-    this.inputBox.on('click', () => {
-      this.inputBox.focus();
-      this.screen.render();
-    });
+    // Click to focus
+    this.chatBox.on('click', () => { this.chatBox.focus(); this.screen.render(); });
+    this.inputBox.on('click', () => { this.inputBox.focus(); this.screen.render(); });
   }
 
+  // ─── Key Bindings ─────────────────────────────────────────────────
+
   bindKeys() {
-    this.inputBox.on('submit', () => {
-      const input = this.inputBox.getValue().trim();
-      if (input) {
-        this.handleInput(input);
-        // Add to history
-        this.commandHistory.push(input);
-        if (this.commandHistory.length > 100) {
-          this.commandHistory.shift();
+    // Ctrl+C always exits — no matter what mode
+    this.screen.key(['C-c', 'C-x'], () => this.exit());
+
+    // Enter → submit prompt.
+    // Return true for ALL keys to prevent the textbox's internal inputOnFocus
+    // handler from double-inserting characters.
+    this.inputBox.on('keypress', (ch, key) => {
+      // Block entirely when modal is open
+      if (this.uiMode === 'modal') return true;
+
+      if (key.name === 'enter' && !key.ctrl && !key.meta) {
+        const input = this.inputBox.getValue().trim();
+        this.inputBox.clearValue();
+        this.inputBox.focus();
+        this.screen.render();
+        if (input) {
+          this.submitInput(input);
         }
-        this.historyIndex = -1;
+        return true; // swallow
       }
-      this.inputBox.clearValue();
-      this.inputBox.focus();
-      this.screen.render();
+      if (key.name === 'escape') {
+        this.inputBox.clearValue();
+        this.screen.render();
+        return true;
+      }
+
+      // For ALL other keys: return true to prevent double-insertion.
+      // The textbox with inputOnFocus:true has already inserted the character.
+      // If we let the event propagate, the textbox will insert it again.
+      return true;
     });
 
-    // History navigation
+    // History navigation — up/down when input is focused
     this.inputBox.key(['up'], () => {
+      if (this.uiMode === 'modal') return;
       if (this.commandHistory.length === 0) return;
       if (this.historyIndex === -1) {
         this.historyIndex = this.commandHistory.length - 1;
       } else if (this.historyIndex > 0) {
         this.historyIndex--;
       }
-      this.inputBox.setValue(this.commandHistory[this.historyIndex]);
+      this.inputBox.setValue(this.commandHistory[this.historyIndex] || '');
       this.screen.render();
     });
 
     this.inputBox.key(['down'], () => {
+      if (this.uiMode === 'modal') return;
       if (this.historyIndex === -1) return;
       this.historyIndex++;
       if (this.historyIndex >= this.commandHistory.length) {
         this.historyIndex = -1;
         this.inputBox.clearValue();
       } else {
-        this.inputBox.setValue(this.commandHistory[this.historyIndex]);
+        this.inputBox.setValue(this.commandHistory[this.historyIndex] || '');
       }
       this.screen.render();
     });
 
-    // Tab completion
+    // Tab → cycle Plan/Build mode
     this.inputBox.key(['tab'], () => {
-      const input = this.inputBox.getValue();
-      const completion = this.getTabCompletion(input);
-      if (completion) {
-        this.inputBox.setValue(completion);
-        this.screen.render();
-      }
+      if (this.uiMode === 'modal') return;
+      this.toggleMode();
     });
-
-    this.screen.key(['C-c', 'C-x'], () => {
-      this.exit();
-    });
-
-    this.screen.key(['escape'], () => {
-      if (this.currentView !== 'chat') {
-        this.switchToChat();
-      }
-    });
-
-    this.screen.key(['F1'], () => this.showHelp());
-    this.screen.key(['F2'], () => this.showProviderMenu());
-    this.screen.key(['F3'], () => this.showConfigMenu());
-    this.screen.key(['F4'], () => this.showMCPMenu());
-    this.screen.key(['F5'], () => this.showSkillsMenu());
-    this.screen.key(['F6'], () => this.showSuperpowersMenu());
-    this.screen.key(['F7'], () => this.showSwarmMenu());
-    this.screen.key(['F8'], () => this.showSessionsMenu());
-    this.screen.key(['F9'], () => this.showThemeMenu());
-    this.screen.key(['F10'], () => this.showExportImportMenu());
-    this.screen.key(['F11'], () => this.showDiagnosticsMenu());
-    
-    // Tab switches mode, Ctrl+K opens command palette, Ctrl+P opens provider picker
-    this.inputBox.key(['tab'], async () => {
-      await this.toggleMode();
-    });
-    this.screen.key(['C-k'], () => this.showCommandPalette());
-    this.screen.key(['C-p'], () => this.showProviderPicker());
-    this.screen.key(['C-z'], async () => { await this.handleUndo(); });
-    this.screen.key(['C-a'], () => this.showAgentPicker());
   }
 
-  async detectGitBranch() {
-    try {
-      const fs = require('node:fs/promises');
-      const path = require('node:path');
-      const gitHead = path.join(this.root, '.git', 'HEAD');
-      const content = await fs.readFile(gitHead, 'utf8');
-      const match = content.match(/ref: refs\/heads\/(.+)/);
-      return match ? match[1].trim() : 'detached';
-    } catch {
-      return null;
-    }
-  }
+  // ─── Input Handling ───────────────────────────────────────────────
 
-  updateHeader() {
-    const provider = this.config?.active_provider || 'unknown';
-    const model = this.config?.active_model || 'unknown';
-    const permMode = this.config?.permission_mode || 'unknown';
-    const cwd = process.cwd().split(/[\\/]/).pop() || process.cwd();
-    const modeDisplay = getModeDisplay(this.currentMode);
-    const gitPart = this.gitBranch ? ` [${this.gitBranch}]` : '';
-    
-    this.header.setContent(
-      `{center}{bold}sicli{/bold} | ${cwd}${gitPart} | ${provider}/${model} | {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg} | ${permMode}{/center}`
-    );
-  }
+  async submitInput(input) {
+    // Record history
+    this.commandHistory.push(input);
+    if (this.commandHistory.length > 200) this.commandHistory.shift();
+    this.historyIndex = -1;
 
-  showLoadingIndicator(message = 'Working...') {
-    const loading = blessed.loading({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: 'shrink',
-      height: 'shrink',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-    });
-    loading.load(message);
-    this.screen.render();
-    return loading;
-  }
-
-  showMessage(message, type = 'info') {
-    const timestamp = new Date().toLocaleTimeString();
-    const prefix = type === 'error' ? '{red-fg}ERROR{/red-fg}' :
-                   type === 'success' ? '{green-fg}SUCCESS{/green-fg}' :
-                   type === 'user' ? '{cyan-fg}You{/cyan-fg}' :
-                   type === 'agent' ? '{yellow-fg}Agent{/yellow-fg}' :
-                   '{gray-fg}INFO{/gray-fg}';
-    const line = `{gray-fg}${timestamp}{/gray-fg} ${prefix}: ${message}`;
-    this.chatHistory.push(line);
-    this.chatBox.setContent(this.chatHistory.join('\n'));
-    this.chatBox.setScrollPerc(100);
-  }
-
-  async handleInput(input) {
-    // Shell command with ! prefix
+    // Shell command
     if (input.startsWith('!')) {
       await this.handleShellCommand(input.slice(1).trim());
       return;
     }
 
-    // @file reference handling
-    if (input.includes('@')) {
-      // Try @agent mention first (single word right after @ at start)
-      const { parseAgentMention } = require('./agents');
-      const mention = parseAgentMention(input);
-      if (mention.agent) {
-        const { getAgent } = require('./agents');
-        const agent = getAgent(mention.agent, this.config || {});
-        if (agent) {
-          this.showMessage(`→ @${agent.name}: ${agent.description}`, 'info');
-          this.currentMode = agent.mode;
-          this.updateHeader();
-          input = mention.text;
-        } else {
-          // Not an agent, try @file
-          const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
-          const result = await attachFileContent(this.root, input);
-          if (result.attached.length > 0 || result.missing.length > 0) {
-            const summary = formatAttachmentSummary(result);
-            if (summary) this.showMessage(summary, 'info');
-            input = result.prompt;
-          }
-        }
-      } else {
-        const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
-        const result = await attachFileContent(this.root, input);
-        if (result.attached.length > 0 || result.missing.length > 0) {
-          const summary = formatAttachmentSummary(result);
-          if (summary) this.showMessage(summary, 'info');
-          input = result.prompt;
-        }
-      }
-      this.screen.render();
-    }
-
-    // Slash commands
+    // Slash command
     if (input.startsWith('/')) {
       await this.handleSlashCommand(input);
       return;
     }
 
-    // Regular chat
-    this.showMessage(input, 'user');
-    
-    // Show loading indicator
-    const spinner = this.showLoadingIndicator('Agent is thinking...');
+    // @file / @agent handling
+    if (input.includes('@')) {
+      input = await this.resolveReferences(input);
+    }
+
+    // Regular chat — send to agent
+    await this.handleChatMessage(input);
+  }
+
+  async handleChatMessage(input) {
+    this.log(input, 'user');
+
+    this.processing = true;
+    this.statusBar.setContent(' {bold}Processing...{/bold} Ctrl+C to cancel');
     this.screen.render();
 
     try {
-      // Run agent task
       const { runAgentTask } = require('./agent');
       const result = await runAgentTask(this.root, input, {
         interactive: false,
         yes: true,
         trace: false,
       });
-      spinner.destroy();
-      this.showMessage(result.text || 'Task completed', 'agent');
+      this.log(result.text || 'Task completed', 'agent');
     } catch (error) {
-      spinner.destroy();
-      this.showMessage(error.message, 'error');
+      this.log(error.message, 'error');
     }
+
+    this.processing = false;
+    this.statusBar.setContent(' Enter: send | /help: commands | Tab: mode | ↑↓: history | Ctrl+C: quit');
     this.screen.render();
   }
 
-  async handleShellCommand(cmd) {
-    if (!cmd) {
-      this.showMessage('Usage: !command [args...]', 'error');
-      return;
-    }
-
-    // Check permission in Plan mode
-    const { checkToolPermission } = require('./modes');
-    const perm = checkToolPermission('run_command', this.currentMode, this.config?.permission_mode === 'auto_approve' ? { run_command: 'allow' } : {});
-    
-    this.showMessage(`$ ${cmd}`, 'info');
-    this.screen.render();
-
+  async resolveReferences(input) {
     try {
-      const { execFile } = require('node:child_process');
-      const args = cmd.split(/\s+/);
-      const command = args[0];
-      const cmdArgs = args.slice(1);
-      
-      await new Promise((resolve, reject) => {
-        execFile(command, cmdArgs, {
-          cwd: this.root,
-          timeout: 30000,
-          maxBuffer: 1024 * 1024,
-          shell: false,
-        }, (error, stdout, stderr) => {
-          if (error) {
-            if (stdout) this.showMessage(stdout.trim().slice(0, 2000), 'info');
-            if (stderr) this.showMessage(stderr.trim().slice(0, 2000), 'error');
-            reject(error);
-          } else {
-            if (stdout) this.showMessage(stdout.trim().slice(0, 2000), 'success');
-            if (stderr) this.showMessage(stderr.trim().slice(0, 500), 'info');
-            resolve();
-          }
-        });
-      });
-    } catch (error) {
-      this.showMessage(`Command failed: ${error.message}`, 'error');
-    }
-    this.screen.render();
+      const { parseAgentMention } = require('./agents');
+      const mention = parseAgentMention(input);
+      if (mention.agent) {
+        const { getAgent } = require('./agents');
+        const agent = getAgent(mention.agent, this.config || {});
+        if (agent) {
+          this.log(`→ @${agent.name}: ${agent.description}`, 'info');
+          this.currentMode = agent.mode;
+          this.updateHeader();
+          return mention.text;
+        }
+      }
+      const { attachFileContent, formatAttachmentSummary } = require('./file-reference');
+      const result = await attachFileContent(this.root, input);
+      if (result.attached.length > 0 || result.missing.length > 0) {
+        const summary = formatAttachmentSummary(result);
+        if (summary) this.log(summary, 'info');
+        return result.prompt;
+      }
+    } catch (_) { /* ignore */ }
+    return input;
   }
+
+  // ─── Slash Commands ───────────────────────────────────────────────
 
   async handleSlashCommand(input) {
     const [cmd, ...args] = input.slice(1).split(/\s+/);
     const action = cmd.toLowerCase();
 
     try {
-      // Built-in commands
-      if (action === 'help') this.showHelp();
-      else if (action === 'provider') this.showProviderMenu();
-      else if (action === 'config') this.showConfigMenu();
-      else if (action === 'mcp') this.showMCPMenu();
-      else if (action === 'skills') this.showSkillsMenu();
-      else if (action === 'powers' || action === 'superpowers') this.showSuperpowersMenu();
-      else if (action === 'swarm') this.showSwarmMenu();
-      else if (action === 'mode') this.handleModeCommand(args);
-      else if (action === 'plan') await this.switchToPlanMode();
-      else if (action === 'build') await this.switchToBuildMode();
-      else if (action === 'exit') this.exit();
-      else if (action === 'diagnostics' || action === 'diag') this.showDiagnosticsMenu();
-      else if (action === 'undo') await this.handleUndo();
-      else {
-        // Try custom command
-        await this.tryCustomCommand(action, args);
+      switch (action) {
+        case 'help':       this.showHelp(); break;
+        case 'clear':      this.clearChat(); break;
+        case 'quit':
+        case 'exit':       this.exit(); break;
+        case 'status':     this.showStatus(); break;
+        case 'provider':   this.showProviderMenu(); break;
+        case 'providers':  this.showProviderMenu(); break;
+        case 'models':     this.showModelsList(); break;
+        case 'config':     this.showConfigMenu(); break;
+        case 'mcp':        this.showMCPMenu(); break;
+        case 'skills':     this.showSkillsMenu(); break;
+        case 'powers':
+        case 'superpowers': this.showSuperpowersMenu(); break;
+        case 'swarm':      this.handleSwarmCommand(args); break;
+        case 'theme':      this.showThemeMenu(); break;
+        case 'export':     await this.handleExportCommand(args); break;
+        case 'import':     await this.handleImportCommand(args); break;
+        case 'history':    this.showHistory(); break;
+        case 'mode':       this.handleModeCommand(args); break;
+        case 'plan':       await this.switchToPlanMode(); break;
+        case 'build':      await this.switchToBuildMode(); break;
+        case 'undo':       await this.handleUndo(); break;
+        case 'diagnostics':
+        case 'diag':       this.showDiagnosticsMenu(); break;
+        case 'sessions':
+        case 'session':    this.showSessionsMenu(); break;
+        case 'agent':
+        case 'agents':     this.showAgentPicker(); break;
+        default:
+          await this.tryCustomCommand(action, args);
       }
     } catch (error) {
-      this.showMessage(error.message, 'error');
+      this.log(error.message, 'error');
     }
     this.screen.render();
   }
 
   async tryCustomCommand(name, args) {
-    const { loadCustomCommand, executeCustomCommand } = require('./commands/custom-commands');
-    
     try {
+      const { loadCustomCommand, executeCustomCommand } = require('./commands/custom-commands');
       const command = await loadCustomCommand(this.root, name);
       if (!command) {
-        this.showMessage(`Unknown command: /${name}. Try /help or create custom command`, 'error');
+        this.log(`Unknown command: /${name}. Type /help for available commands.`, 'error');
         return;
       }
 
-      this.showMessage(`Running custom command: /${name}`, 'info');
+      this.log(`Running /${name}...`, 'info');
       const result = await executeCustomCommand(this.root, name, args);
-      
-      // Show what the command will do
-      this.showMessage(`Prompt: ${result.prompt.slice(0, 200)}${result.prompt.length > 200 ? '...' : ''}`, 'info');
-      
-      // Switch mode if specified
-      if (result.agent === 'plan' && this.currentMode !== 'plan') {
-        await this.switchToPlanMode();
-      } else if (result.agent === 'build' && this.currentMode !== 'build') {
-        await this.switchToBuildMode();
-      }
 
-      // Execute the prompt
-      const spinner = this.showLoadingIndicator(`Executing /${name}...`);
+      if (result.agent === 'plan' && this.currentMode !== 'plan') await this.switchToPlanMode();
+      else if (result.agent === 'build' && this.currentMode !== 'build') await this.switchToBuildMode();
+
+      this.statusBar.setContent(` {bold}Running /${name}...{/bold}`);
       this.screen.render();
 
-      try {
-        const { runAgentTask } = require('./agent');
-        const taskResult = await runAgentTask(this.root, result.prompt, {
-          interactive: false,
-          yes: true,
-          trace: false,
-        });
-        spinner.destroy();
-        this.showMessage(taskResult.text || 'Command completed', 'agent');
-      } catch (error) {
-        spinner.destroy();
-        throw error;
-      }
+      const { runAgentTask } = require('./agent');
+      const taskResult = await runAgentTask(this.root, result.prompt, {
+        interactive: false, yes: true, trace: false,
+      });
+      this.log(taskResult.text || `/${name} completed`, 'agent');
+      this.statusBar.setContent(' Enter: send | /help: commands | Tab: mode | ↑↓: history | Ctrl+C: quit');
     } catch (error) {
-      throw error;
+      this.log(error.message, 'error');
     }
   }
 
-  async showCommandPalette() {
-    // Built-in commands
-    const commands = [
-      { cmd: '/help', desc: 'Show help' },
-      { cmd: '/mode plan', desc: 'Switch to Plan mode (read-only)' },
-      { cmd: '/mode build', desc: 'Switch to Build mode' },
-      { cmd: '/provider', desc: 'Provider menu' },
-      { cmd: '/config', desc: 'Config menu' },
-      { cmd: '/mcp', desc: 'MCP servers menu' },
-      { cmd: '/skills', desc: 'Skills menu' },
-      { cmd: '/powers', desc: 'Superpowers menu' },
-      { cmd: '/swarm', desc: 'Swarm orchestration' },
-      { cmd: '/exit', desc: 'Exit TUI' },
-      { cmd: '/diagnostics', desc: 'Run diagnostics (tests/lint)' },
-    ];
+  // ─── Command Implementations ──────────────────────────────────────
 
-    // Add custom commands
-    try {
-      const { discoverCustomCommands } = require('./commands/custom-commands');
-      const customCommands = await discoverCustomCommands(this.root);
-      for (const custom of customCommands) {
-        commands.push({
-          cmd: `/${custom.name}`,
-          desc: custom.frontmatter.description || 'Custom command',
-        });
-      }
-    } catch (error) {
-      // Silently ignore if custom commands can't be loaded
-    }
-
-    const items = commands.map(c => `${c.cmd.padEnd(20)} ${c.desc}`);
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '60%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Command Palette (Ctrl+K) ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-      search: true,
-    });
-
-    list.on('select', async (item, index) => {
-      const command = commands[index].cmd;
-      list.destroy();
-      await this.handleSlashCommand(command);
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
+  clearChat() {
+    this.chatHistory = [];
+    this.chatBox.setContent('');
+    this.log('Screen cleared.', 'info');
+    this.screen.render();
   }
 
-  showProviderPicker() {
-    const providers = listBuiltInProviders();
-    const items = providers.map(p => {
-      const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
-      const local = p.local ? ' (local)' : '';
-      return `${p.label.padEnd(25)}${local}${active}`;
-    });
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '60%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Provider Picker (Ctrl+P) ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      const provider = providers[index];
-      list.destroy();
-      this.config.active_provider = provider.id;
-      if (provider.default_model) {
-        this.config.active_model = provider.default_model;
-      }
-      await saveConfig(this.root, this.config, { scope: 'local' });
-      this.updateHeader();
-      this.showMessage(`Switched to ${provider.label}`, 'success');
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
+  showStatus() {
+    const provider = this.config?.active_provider || 'unknown';
+    const model = this.config?.active_model || 'unknown';
+    const permMode = this.config?.permission_mode || 'unknown';
+    const modeDisplay = getModeDisplay(this.currentMode);
+    this.log(`Provider: ${provider}/${model}  Mode: ${modeDisplay.label}  Permission: ${permMode}  Branch: ${this.gitBranch || 'n/a'}`, 'info');
   }
 
   showHelp() {
-    const help = blessed.message({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '80%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      label: ' Help ',
-    });
-
-    const content = `
-{bold}Keyboard Shortcuts:{/bold}
-  F1          Show this help
-  F2          Provider menu (select/add providers)
-  F3          Config menu (view/edit config)
-  F4          MCP menu (manage MCP servers)
-  F5          Skills menu (enable/disable skills)
-  F6          Superpowers menu (toggle features)
-  F7          Swarm menu (multi-agent orchestration)
-  F8          Theme selector
-  F9          Export/import config
-  Tab         Switch Plan/Build modes
-  Ctrl+K      Command palette
-  Ctrl+P      Provider picker
-  Escape      Return to chat / close dialog
-  Ctrl+C      Exit TUI
-  Enter       Send message/submit
-
-{bold}Input Prefixes:{/bold}
-  /command       Slash command (e.g., /help, /mode plan)
-  !command       Run shell command (e.g., !git status)
-
-{bold}Slash Commands:{/bold}
-  /help              Show help
-  /mode <plan|build> Switch mode
-  /plan              Switch to Plan mode
-  /build             Switch to Build mode
-  /provider          Provider menu
-  /config            Config menu
-  /mcp               MCP servers menu
-  /skills            Skills menu
-  /powers            Superpowers menu
-  /swarm <prompt>    Swarm orchestration
-  /exit              Exit TUI
-
-{bold}Modes:{/bold}
-  PLAN   Read-only mode for safe exploration and analysis
-  BUILD  Implementation mode with edit/write permissions
-
-{bold}Press Escape to close{/bold}
-`;
-    help.setContent(content);
-    help.focus();
-
-    this.screen.key('escape', () => {
-      help.destroy();
-      this.screen.unkey('escape');
-    });
+    const lines = [
+      '{bold}Slash Commands{/bold}',
+      '  /help              Show this help',
+      '  /clear             Clear conversation',
+      '  /status            Show current provider/mode/status',
+      '  /provider          Select provider',
+      '  /providers         Same as /provider',
+      '  /models            List available models',
+      '  /config            Config menu (local/global)',
+      '  /mcp               Manage MCP servers',
+      '  /skills            Manage skills',
+      '  /powers            Toggle superpowers',
+      '  /theme             Change theme',
+      '  /history           Show command history',
+      '  /mode <plan|build> Switch mode',
+      '  /plan              Switch to Plan mode',
+      '  /build             Switch to Build mode',
+      '  /sessions          Session management',
+      '  /agents            Agent picker',
+      '  /diagnostics       Run diagnostics',
+      '  /undo              Undo last change (git)',
+      '  /swarm <prompt>    Run swarm orchestration',
+      '  /export [scope]    Export config (local/global/merged)',
+      '  /import [scope]    Import config',
+      '  /exit              Exit TUI',
+      '  /quit              Same as /exit',
+      '',
+      '{bold}Shortcuts{/bold}',
+      '  Enter      Send prompt / execute command',
+      '  Tab        Cycle Plan/Build mode',
+      '  ↑ / ↓      Navigate command history',
+      '  Ctrl+C     Exit',
+      '  Escape     Clear input / close dialog',
+      '  !command   Run shell command (e.g., !git status)',
+      '  @file      Attach file to context',
+      '  @agent     Route to specific agent',
+      '',
+      '{bold}Tab completion{/bold}',
+      '  Type /he<Tab> → /help',
+    ];
+    for (const line of lines) this.log(line, 'help');
   }
 
-  async showProviderMenu() {
+  showHistory() {
+    if (this.commandHistory.length === 0) {
+      this.log('No command history.', 'info');
+      return;
+    }
+    this.log(`Command history (${this.commandHistory.length} entries):`, 'info');
+    const start = Math.max(0, this.commandHistory.length - 20);
+    for (let i = start; i < this.commandHistory.length; i++) {
+      this.log(`  ${i + 1}. ${this.commandHistory[i]}`, 'info');
+    }
+  }
+
+  showModelsList() {
+    try {
+      const models = modelsForConfig(this.config);
+      if (models.length === 0) {
+        this.log('No models available for current provider.', 'info');
+        return;
+      }
+      this.log(`Available models (${models.length}):`, 'info');
+      for (const m of models) {
+        const active = m === this.config.active_model ? ' (active)' : '';
+        this.log(`  ${m}${active}`, 'info');
+      }
+    } catch (error) {
+      this.log(`Error: ${error.message}`, 'error');
+    }
+  }
+
+  handleSwarmCommand(args) {
+    if (args.length === 0) {
+      this.log('Usage: /swarm <prompt>', 'error');
+      return;
+    }
+    const prompt = args.join(' ');
+    this.log(`Swarm: ${prompt}`, 'info');
+    this.handleChatMessage(prompt);
+  }
+
+  async handleExportCommand(args) {
+    const scope = args[0] || 'merged';
+    try {
+      const fs = require('node:fs/promises');
+      const path = require('node:path');
+      const config = await loadConfig(this.root, { scope });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `sicli-config-${scope}-${timestamp}.json`;
+      const filepath = path.join(this.root, filename);
+      await fs.writeFile(filepath, JSON.stringify(config, null, 2));
+      this.log(`Exported ${scope} config to ${filename}`, 'success');
+    } catch (error) {
+      this.log(`Export failed: ${error.message}`, 'error');
+    }
+  }
+
+  async handleImportCommand(args) {
+    const scope = args[0] || 'local';
+    if (!args[1]) {
+      this.log('Usage: /import <local|global> <filepath>', 'error');
+      return;
+    }
+    try {
+      const fs = require('node:fs/promises');
+      const path = require('node:path');
+      const fullPath = path.isAbsolute(args[1]) ? args[1] : path.join(this.root, args[1]);
+      const content = await fs.readFile(fullPath, 'utf8');
+      const importedConfig = JSON.parse(content);
+      await saveConfig(this.root, importedConfig, { scope, backup: true });
+      this.config = await loadConfig(this.root);
+      this.updateHeader();
+      this.log(`Imported config from ${args[1]}`, 'success');
+    } catch (error) {
+      this.log(`Import failed: ${error.message}`, 'error');
+    }
+  }
+
+  // ─── Mode Management ──────────────────────────────────────────────
+
+  async handleModeCommand(args) {
+    const mode = args[0]?.toLowerCase();
+    if (mode === 'plan') await this.switchToPlanMode();
+    else if (mode === 'build') await this.switchToBuildMode();
+    else this.log('Usage: /mode <plan|build>', 'error');
+  }
+
+  async switchToPlanMode() {
+    this.currentMode = MODES.PLAN;
+    const display = getModeDisplay(this.currentMode);
+    this.log(`Switched to ${display.label} mode: ${display.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
+  }
+
+  async switchToBuildMode() {
+    this.currentMode = MODES.BUILD;
+    const display = getModeDisplay(this.currentMode);
+    this.log(`Switched to ${display.label} mode: ${display.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
+  }
+
+  toggleMode() {
+    const result = switchMode(this.currentMode);
+    this.currentMode = result.mode;
+    const display = getModeDisplay(this.currentMode);
+    this.log(`Switched to ${display.label} mode: ${result.description}`, 'success');
+    this.updateHeader();
+    this.screen.render();
+  }
+
+  // ─── Undo ─────────────────────────────────────────────────────────
+
+  async handleUndo() {
+    try {
+      const { undo, listSnapshots } = require('./snapshot');
+      const snaps = await listSnapshots(this.root);
+      if (snaps.length === 0) {
+        this.log('No snapshots to undo.', 'info');
+        return;
+      }
+      const result = await undo(this.root);
+      if (result.ok) {
+        this.log(result.message, 'success');
+      } else {
+        this.log(`Undo failed: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      this.log(`Undo error: ${error.message}`, 'error');
+    }
+    this.screen.render();
+  }
+
+  // ─── Shell Commands ───────────────────────────────────────────────
+
+  async handleShellCommand(cmd) {
+    if (!cmd) {
+      this.log('Usage: !command [args...]', 'error');
+      return;
+    }
+    this.log(`$ ${cmd}`, 'info');
+    this.screen.render();
+
+    try {
+      const { execFile } = require('node:child_process');
+      const parts = cmd.split(/\s+/);
+      await new Promise((resolve, reject) => {
+        execFile(parts[0], parts.slice(1), {
+          cwd: this.root, timeout: 30000, maxBuffer: 1024 * 1024, shell: false,
+        }, (error, stdout, stderr) => {
+          if (stdout) this.log(stdout.trim().slice(0, 2000), 'info');
+          if (stderr) this.log(stderr.trim().slice(0, 2000), error ? 'error' : 'info');
+          if (error) reject(error); else resolve();
+        });
+      });
+    } catch (error) {
+      this.log(`Command failed: ${error.message}`, 'error');
+    }
+    this.screen.render();
+  }
+
+  // ─── Interactive Menus ────────────────────────────────────────────
+
+  showProviderMenu() {
     const providers = listBuiltInProviders();
     const items = providers.map(p => {
       const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
@@ -631,711 +559,423 @@ class TUI {
     items.push('+ Add custom provider');
     items.push('Cancel');
 
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Select Provider ',
-      keys: true,
-      vi: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-      if (index === items.length - 2) {
-        list.destroy();
-        await this.addCustomProvider();
-        return;
-      }
+    this.showList(' Select Provider ', items, async (index) => {
+      if (index === items.length - 1) return;
+      if (index === items.length - 2) { await this.addCustomProvider(); return; }
       const provider = providers[index];
       this.config.active_provider = provider.id;
       this.config.active_model = provider.default_model;
+      if (!this.config.providers) this.config.providers = {};
       this.config.providers[provider.id] = { ...provider };
       await saveConfig(this.root, this.config, { scope: 'local' });
       this.updateHeader();
-      this.showMessage(`Switched to ${provider.label} / ${provider.default_model}`, 'success');
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
+      this.log(`Switched to ${provider.label} / ${provider.default_model}`, 'success');
     });
   }
 
-  async addCustomProvider() {
-    const form = blessed.form({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '80%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      label: ' Add Custom Provider ',
-      keys: true,
-    });
+  showModelsList() {
+    try {
+      const models = modelsForConfig(this.config);
+      if (models.length === 0) { this.log('No models available.', 'info'); return; }
+      const items = models.map(m => m === this.config.active_model ? `${m} [ACTIVE]` : m);
+      items.push('Cancel');
+      this.showList(' Select Model ', items, (index) => {
+        if (index === items.length - 1) return;
+        this.config.active_model = models[index];
+        saveConfig(this.root, this.config, { scope: 'local' }).then(() => {
+          this.updateHeader();
+          this.log(`Switched model: ${models[index]}`, 'success');
+          this.screen.render();
+        });
+      });
+    } catch (error) {
+      this.log(`Error: ${error.message}`, 'error');
+    }
+  }
 
-    const fields = [
+  async addCustomProvider() {
+    this.showForm('Add Custom Provider', [
       { label: 'ID (unique):', name: 'id' },
       { label: 'Label:', name: 'label' },
       { label: 'Base URL:', name: 'base_url' },
       { label: 'API Key Env Var:', name: 'api_key_env' },
       { label: 'Models (comma-separated):', name: 'models' },
-    ];
-
-    let top = 2;
-    for (const field of fields) {
-      blessed.text({
-        parent: form,
-        top,
-        left: 2,
-        content: field.label,
-        style: { fg: 'white' },
-      });
-      const textbox = blessed.textbox({
-        parent: form,
-        top: top + 1,
-        left: 2,
-        width: '90%',
-        height: 3,
-        border: { type: 'line' },
-        style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-        inputOnFocus: true,
-        name: field.name,
-      });
-      top += 5;
-    }
-
-    const submitBtn = blessed.button({
-      parent: form,
-      top,
-      left: 2,
-      width: 20,
-      height: 3,
-      content: 'Save',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'green', border: { fg: '#8700af' } },
-    });
-
-    const cancelBtn = blessed.button({
-      parent: form,
-      top,
-      left: 25,
-      width: 20,
-      height: 3,
-      content: 'Cancel',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'red', border: { fg: '#8700af' } },
-    });
-
-    submitBtn.on('press', async () => {
-      const data = {};
-      for (const field of fields) {
-        const textbox = form.children.find(c => c.name === field.name);
-        data[field.name] = textbox.getValue().trim();
-      }
+    ], async (data) => {
       if (!data.id || !data.base_url) {
-        this.showMessage('ID and Base URL are required', 'error');
+        this.log('ID and Base URL are required', 'error');
         return;
       }
-      const models = data.models.split(',').map(m => m.trim()).filter(Boolean);
+      const models = data.models ? data.models.split(',').map(m => m.trim()).filter(Boolean) : [];
       const { connectCustomProvider } = require('./config');
       await connectCustomProvider(this.root, {
-        id: data.id,
-        label: data.label,
-        base_url: data.base_url,
-        api_key_env: data.api_key_env,
-        models: models.length > 0 ? models : undefined,
+        id: data.id, label: data.label, base_url: data.base_url,
+        api_key_env: data.api_key_env, models: models.length > 0 ? models : undefined,
       }, { scope: 'local' });
       this.config = await loadConfig(this.root);
       this.updateHeader();
-      this.showMessage(`Added custom provider: ${data.label}`, 'success');
-      form.destroy();
-      this.screen.render();
-    });
-
-    cancelBtn.on('press', () => {
-      form.destroy();
-      this.screen.render();
-    });
-
-    form.focus();
-    this.screen.key('escape', () => {
-      form.destroy();
-      this.screen.unkey('escape');
+      this.log(`Added custom provider: ${data.label || data.id}`, 'success');
     });
   }
 
-  async showConfigMenu() {
-    const items = [
-      'View local config',
-      'View global config',
-      'Edit local config',
-      'Edit global config',
-      'Validate config',
-      'Cancel',
-    ];
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Config ',
-      keys: true,
-      vi: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
+  showConfigMenu() {
+    const items = ['View local config', 'View global config', 'Validate config', 'Cancel'];
+    this.showList(' Config ', items, async (index) => {
+      if (index === items.length - 1) return;
       try {
-        if (index === 0) {
-          const local = await loadConfig(this.root, { scope: 'local' });
-          this.showJsonViewer('Local Config', local);
-        } else if (index === 1) {
-          const global = await loadConfig(this.root, { scope: 'global' });
-          this.showJsonViewer('Global Config', global);
-        } else if (index === 4) {
-          const config = await loadConfig(this.root);
-          this.showMessage('Config is valid', 'success');
-        }
+        if (index === 0) this.showJsonViewer('Local Config', await loadConfig(this.root, { scope: 'local' }));
+        else if (index === 1) this.showJsonViewer('Global Config', await loadConfig(this.root, { scope: 'global' }));
+        else if (index === 2) { await loadConfig(this.root); this.log('Config is valid.', 'success'); }
       } catch (error) {
-        this.showMessage(error.message, 'error');
+        this.log(error.message, 'error');
       }
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
     });
   }
 
-  async showMCPMenu() {
-    const mcpConfig = await loadMcpConfig(this.root);
-    const servers = Object.keys(mcpConfig.mcpServers || {});
-    const items = [];
-    
-    if (servers.length > 0) {
-      servers.forEach(s => {
-        const config = mcpConfig.mcpServers[s];
-        items.push(`${s} - ${config.command} (${config.args?.length || 0} args)`);
+  showMCPMenu() {
+    loadMcpConfig(this.root).then(mcpConfig => {
+      const servers = Object.keys(mcpConfig.mcpServers || {});
+      const items = [];
+      if (servers.length > 0) {
+        servers.forEach(s => {
+          const cfg = mcpConfig.mcpServers[s];
+          items.push(`${s} — ${cfg.command} (${cfg.args?.length || 0} args)`);
+        });
+      } else {
+        items.push('No MCP servers configured');
+      }
+      items.push('---');
+      items.push('+ Add MCP server');
+      if (servers.length > 0) items.push('⟳ Reload MCP');
+      items.push('Cancel');
+
+      this.showList(' MCP Servers ', items, async (index) => {
+        if (index === items.length - 1) return;
+        const itemText = items[index];
+        if (itemText === '+ Add MCP server') { await this.addMCPServer(); return; }
+        if (itemText === '⟳ Reload MCP') { this.log('MCP reloaded.', 'success'); return; }
+        if (index < servers.length) { this.showJsonViewer(`MCP: ${servers[index]}`, mcpConfig.mcpServers[servers[index]]); return; }
       });
-    } else {
-      items.push('No MCP servers configured');
-    }
-    
-    items.push('---');
-    items.push('+ Add MCP server');
-    if (servers.length > 0) {
-      items.push('- Remove MCP server');
-      items.push('⟳ Reload MCP');
-    }
-    items.push('Cancel');
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' MCP Servers ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      // Cancel
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-
-      const itemText = items[index];
-      
-      // Add MCP server
-      if (itemText === '+ Add MCP server') {
-        list.destroy();
-        await this.addMCPServer();
-        return;
-      }
-      
-      // Remove MCP server
-      if (itemText === '- Remove MCP server') {
-        list.destroy();
-        await this.removeMCPServer(servers);
-        return;
-      }
-      
-      // Reload MCP
-      if (itemText === '⟳ Reload MCP') {
-        try {
-          const { MCPManager } = require('./mcp-client');
-          // Reload logic would go here
-          this.showMessage('MCP reloaded', 'success');
-        } catch (error) {
-          this.showMessage(`Reload failed: ${error.message}`, 'error');
-        }
-        list.destroy();
-        this.screen.render();
-        return;
-      }
-      
-      // Show server details
-      if (index < servers.length) {
-        const serverName = servers[index];
-        const config = mcpConfig.mcpServers[serverName];
-        this.showJsonViewer(`MCP Server: ${serverName}`, config);
-        list.destroy();
-        return;
-      }
-      
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
     });
   }
 
   async addMCPServer() {
-    const form = blessed.form({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      label: ' Add MCP Server ',
-      keys: true,
-      mouse: true,
-    });
-
-    const fields = [
+    this.showForm('Add MCP Server', [
       { label: 'Server Name:', name: 'name', placeholder: 'filesystem' },
       { label: 'Command:', name: 'command', placeholder: 'npx' },
       { label: 'Args (comma-separated):', name: 'args', placeholder: '@modelcontextprotocol/server-filesystem,/path' },
-      { label: 'Env (KEY=VAL, comma-separated):', name: 'env', placeholder: 'DEBUG=true' },
-    ];
+      { label: 'Env (KEY=VAL, comma):', name: 'env', placeholder: 'DEBUG=true' },
+    ], async (data) => {
+      if (!data.name || !data.command) { this.log('Name and command required.', 'error'); return; }
+      const mcpConfig = await loadMcpConfig(this.root);
+      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+      const args = data.args ? data.args.split(',').map(a => a.trim()).filter(Boolean) : [];
+      const env = {};
+      if (data.env) data.env.split(',').forEach(pair => { const [k, v] = pair.split('=').map(s => s.trim()); if (k && v) env[k] = v; });
+      mcpConfig.mcpServers[data.name] = { command: data.command, args, env: Object.keys(env).length > 0 ? env : undefined };
+      await saveMcpConfig(this.root, mcpConfig);
+      this.log(`Added MCP server: ${data.name}`, 'success');
+    });
+  }
 
+  showSkillsMenu() {
+    Promise.all([discoverSkills(this.root), loadProfiles(this.root)]).then(([skills, { active }]) => {
+      const activeNames = active.memory?.active_skills || [];
+      const items = skills.map(s => {
+        const status = activeNames.includes(s.name) ? '[ENABLED]' : '[disabled]';
+        return `${s.name} — ${s.description} ${status}`;
+      });
+      items.push('Cancel');
+      this.showList(' Skills ', items, async (index) => {
+        if (index === items.length - 1) return;
+        const skill = skills[index];
+        if (activeNames.includes(skill.name)) {
+          await disableSkill(this.root, skill.name);
+          this.log(`Disabled: ${skill.name}`, 'success');
+        } else {
+          await enableSkill(this.root, skill.name);
+          this.log(`Enabled: ${skill.name}`, 'success');
+        }
+        this.screen.render();
+      });
+    });
+  }
+
+  showSuperpowersMenu() {
+    const powers = listSuperpowers();
+    const items = powers.map(p => {
+      const enabled = isEnabled(this.config, p.name) ? '[ON]' : '[OFF]';
+      return `${p.label} ${enabled} — ${p.description}`;
+    });
+    items.push('---');
+    items.push('Preset: Safe', 'Preset: Balanced', 'Preset: Power');
+    items.push('Cancel');
+
+    this.showList(' Superpowers ', items, async (index) => {
+      if (index === items.length - 1) return;
+      if (index === powers.length + 1) { this.applyPreset('safe'); return; }
+      if (index === powers.length + 2) { this.applyPreset('balanced'); return; }
+      if (index === powers.length + 3) { this.applyPreset('power'); return; }
+      if (index === powers.length) return;
+      const power = powers[index];
+      if (!this.config.superpowers) this.config.superpowers = {};
+      this.config.superpowers[power.name] = !isEnabled(this.config, power.name);
+      await saveConfig(this.root, this.config, { scope: 'local' });
+      this.log(`Toggled ${power.name}: ${this.config.superpowers[power.name] ? 'ON' : 'OFF'}`, 'success');
+      this.screen.render();
+    });
+  }
+
+  async applyPreset(name) {
+    this.config.superpowers = applyPreset(name);
+    await saveConfig(this.root, this.config, { scope: 'local' });
+    this.log(`Applied preset: ${name}`, 'success');
+    this.screen.render();
+  }
+
+  showThemeMenu() {
+    const themes = this.getThemes();
+    const names = Object.keys(themes);
+    const items = names.map(n => n === this.currentTheme ? `${n} [ACTIVE]` : n);
+    items.push('Cancel');
+    this.showList(' Theme ', items, async (index) => {
+      if (index === items.length - 1) return;
+      this.currentTheme = names[index];
+      this.applyTheme();
+      this.config.tui_theme = this.currentTheme;
+      await saveConfig(this.root, this.config, { scope: 'local' });
+      this.log(`Theme: ${this.currentTheme}`, 'success');
+      this.screen.render();
+    });
+  }
+
+  showSessionsMenu() {
+    const { listSessions, createSession, loadSession, deleteSession, exportToMarkdown, getActiveSessionId, setActiveSessionId } = require('./sessions');
+    Promise.all([listSessions(this.root), getActiveSessionId(this.root)]).then(([sessions, activeId]) => {
+      const items = [
+        '+ New Session',
+        ...sessions.map(s => {
+          const active = s.id === activeId ? ' [ACTIVE]' : '';
+          return `${s.title}${active} (${s.messageCount} msgs)`;
+        }),
+        'Export Active Session',
+        'Cancel',
+      ];
+      this.showList(' Sessions ', items, async (index) => {
+        if (index === items.length - 1) return;
+        if (index === 0) {
+          const session = await createSession(this.root, {
+            title: `Session ${new Date().toLocaleString()}`,
+            mode: this.currentMode, provider: this.config?.active_provider, model: this.config?.active_model,
+          });
+          await setActiveSessionId(this.root, session.id);
+          this.log(`Created session: ${session.title}`, 'success');
+          return;
+        }
+        if (index === sessions.length + 1) {
+          if (!activeId) { this.log('No active session.', 'error'); return; }
+          try {
+            const md = await exportToMarkdown(this.root, activeId);
+            const fs = require('node:fs/promises');
+            const path = require('node:path');
+            const fname = `session-${activeId}-${Date.now()}.md`;
+            await fs.writeFile(path.join(this.root, fname), md);
+            this.log(`Exported to ${fname}`, 'success');
+          } catch (e) { this.log(`Export failed: ${e.message}`, 'error'); }
+          return;
+        }
+        // Resume
+        const session = sessions[index - 1];
+        await setActiveSessionId(this.root, session.id);
+        const loaded = await loadSession(this.root, session.id);
+        if (loaded?.messages) {
+          this.chatHistory = [];
+          for (const msg of loaded.messages) this.log(msg.content, msg.role === 'user' ? 'user' : 'agent');
+        }
+        this.log(`Resumed: ${session.title}`, 'success');
+      });
+    });
+  }
+
+  showDiagnosticsMenu() {
+    this.showList(' Diagnostics ', ['Run Tests (npm test)', 'Cancel'], async (index) => {
+      if (index === 1) return;
+      this.log('Running npm test...', 'info');
+      this.screen.render();
+      try {
+        const { runTests, formatDiagnostics } = require('./diagnostics');
+        const result = await runTests(this.root);
+        this.log(formatDiagnostics(result.diagnostics), result.passed ? 'success' : 'error');
+      } catch (e) { this.log(`Error: ${e.message}`, 'error'); }
+    });
+  }
+
+  showAgentPicker() {
+    try {
+      const { listAllAgents } = require('./agents');
+      const agents = listAllAgents(this.config || {});
+      const items = agents.map(a => `${a.name.padEnd(12)} [${a.mode.toUpperCase()}]  ${a.description}`);
+      items.push('Cancel');
+      this.showList(' Agent Picker ', items, (index) => {
+        if (index === items.length - 1) return;
+        const agent = agents[index];
+        this.currentMode = agent.mode;
+        this.updateHeader();
+        this.log(`Switched to @${agent.name}: ${agent.description}`, 'success');
+        this.screen.render();
+      });
+    } catch (e) {
+      this.log(`Agent error: ${e.message}`, 'error');
+    }
+  }
+
+  showPermissionPanel() {
+    const currentMode = this.config?.permission_mode || 'unknown';
+    const modes = listPermissionModes();
+    const lines = [
+      `{bold}Current Permission Mode: {green-fg}${currentMode}{/green-fg}{/bold}`,
+      '',
+      '{bold}Available Modes:{/bold}',
+      ...modes.map(m => {
+        const desc = m === 'secure' ? 'Most restrictive — all edits require approval' :
+                     m === 'partial_secure' ? 'Read/append allowed, edits require approval' :
+                     m === 'ai_reviewed' ? 'AI reviews decisions, asks for high-risk' :
+                     m === 'auto_approve' ? 'All actions auto-approved (use with caution)' : '';
+        return `  ${m === currentMode ? '→' : ' '} ${m}: ${desc}`;
+      }),
+    ];
+    for (const line of lines) this.log(line, 'help');
+  }
+
+  // ─── Shared UI Helpers ────────────────────────────────────────────
+
+  showList(label, items, onSelect) {
+    this.uiMode = 'modal'; // block input handler
+
+    const list = blessed.list({
+      parent: this.screen,
+      top: 'center', left: 'center', width: '70%', height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
+      label: ` ${label} `,
+      keys: true, vi: true, mouse: true, items,
+    });
+
+    const closeModal = () => {
+      list.destroy();
+      this.uiMode = 'input'; // restore input mode
+      this.inputBox.clearValue();
+      this.inputBox.focus();
+      this.screen.render();
+    };
+
+    list.on('select', async (_item, index) => {
+      closeModal();
+      await onSelect(index);
+    });
+
+    list.focus();
+    this.screen.render();
+
+    // Escape closes modal
+    list.key(['escape'], () => { closeModal(); });
+  }
+
+  showForm(label, fields, onSubmit) {
+    this.uiMode = 'modal'; // block input handler
+
+    const form = blessed.form({
+      parent: this.screen,
+      top: 'center', left: 'center', width: '70%', height: '70%',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
+      label: ` ${label} `,
+      keys: true, mouse: true,
+    });
     let top = 2;
     for (const field of fields) {
-      blessed.text({
-        parent: form,
-        top,
-        left: 2,
-        content: field.label,
-        style: { fg: 'white' },
-      });
-      const textbox = blessed.textbox({
-        parent: form,
-        top: top + 1,
-        left: 2,
-        width: '90%',
-        height: 3,
+      blessed.text({ parent: form, top, left: 2, content: field.label, style: { fg: 'white' } });
+      const tb = blessed.textbox({
+        parent: form, top: top + 1, left: 2, width: '90%', height: 3,
         border: { type: 'line' },
         style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-        inputOnFocus: true,
-        name: field.name,
-        mouse: true,
+        inputOnFocus: true, name: field.name, mouse: true,
       });
-      if (field.placeholder) {
-        textbox.setValue(field.placeholder);
-      }
+      if (field.placeholder) tb.setValue(field.placeholder);
       top += 5;
     }
-
     const submitBtn = blessed.button({
-      parent: form,
-      top,
-      left: 2,
-      width: 20,
-      height: 3,
-      content: 'Add Server',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'green', border: { fg: '#8700af' } },
-      mouse: true,
+      parent: form, top, left: 2, width: 20, height: 3,
+      content: 'Save', border: { type: 'line' },
+      style: { fg: 'black', bg: 'green', border: { fg: '#8700af' } }, mouse: true,
     });
-
     const cancelBtn = blessed.button({
-      parent: form,
-      top,
-      left: 25,
-      width: 20,
-      height: 3,
-      content: 'Cancel',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'red', border: { fg: '#8700af' } },
-      mouse: true,
+      parent: form, top, left: 25, width: 20, height: 3,
+      content: 'Cancel', border: { type: 'line' },
+      style: { fg: 'black', bg: 'red', border: { fg: '#8700af' } }, mouse: true,
     });
+    const closeForm = () => {
+      form.destroy();
+      this.uiMode = 'input';
+      this.inputBox.focus();
+      this.screen.render();
+    };
 
     submitBtn.on('press', async () => {
       const data = {};
       for (const field of fields) {
-        const textbox = form.children.find(c => c.name === field.name);
-        data[field.name] = textbox.getValue().trim();
+        const tb = form.children.find(c => c.name === field.name);
+        data[field.name] = tb?.getValue()?.trim() || '';
       }
-      
-      if (!data.name || !data.command) {
-        this.showMessage('Server name and command are required', 'error');
-        return;
-      }
-
-      try {
-        const mcpConfig = await loadMcpConfig(this.root);
-        if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-        
-        const args = data.args ? data.args.split(',').map(a => a.trim()).filter(Boolean) : [];
-        const env = {};
-        if (data.env) {
-          data.env.split(',').forEach(pair => {
-            const [key, val] = pair.split('=').map(s => s.trim());
-            if (key && val) env[key] = val;
-          });
-        }
-
-        mcpConfig.mcpServers[data.name] = {
-          command: data.command,
-          args,
-          env: Object.keys(env).length > 0 ? env : undefined,
-        };
-
-        await saveMcpConfig(this.root, mcpConfig);
-        this.showMessage(`Added MCP server: ${data.name}`, 'success');
-        form.destroy();
-        this.screen.render();
-      } catch (error) {
-        this.showMessage(`Failed to add server: ${error.message}`, 'error');
-      }
+      closeForm();
+      await onSubmit(data);
     });
-
-    cancelBtn.on('press', () => {
-      form.destroy();
-      this.screen.render();
-    });
-
+    cancelBtn.on('press', () => { closeForm(); });
     form.focus();
-    this.screen.key('escape', () => {
-      form.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async removeMCPServer(servers) {
-    if (servers.length === 0) return;
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'red' } },
-      label: ' Remove MCP Server ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items: [...servers, 'Cancel'],
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === servers.length) {
-        list.destroy();
-        return;
-      }
-
-      const serverName = servers[index];
-      const mcpConfig = await loadMcpConfig(this.root);
-      delete mcpConfig.mcpServers[serverName];
-      await saveMcpConfig(this.root, mcpConfig);
-      this.showMessage(`Removed MCP server: ${serverName}`, 'success');
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async showSkillsMenu() {
-    const skills = await discoverSkills(this.root);
-    const { active } = await loadProfiles(this.root);
-    const activeNames = active.memory?.active_skills || [];
-    const items = skills.map(s => {
-      const status = activeNames.includes(s.name) ? '[ENABLED]' : '[disabled]';
-      return `${s.name} - ${s.description} ${status}`;
-    });
-    items.push('Cancel');
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Skills ',
-      keys: true,
-      vi: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-      const skill = skills[index];
-      const isActive = activeNames.includes(skill.name);
-      if (isActive) {
-        await disableSkill(this.root, skill.name);
-        this.showMessage(`Disabled skill: ${skill.name}`, 'success');
-      } else {
-        await enableSkill(this.root, skill.name);
-        this.showMessage(`Enabled skill: ${skill.name}`, 'success');
-      }
-      list.destroy();
-      await this.showSkillsMenu();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async showSuperpowersMenu() {
-    const powers = listSuperpowers();
-    const items = powers.map(p => {
-      const enabled = isEnabled(this.config, p.name) ? '[ON]' : '[OFF]';
-      return `${p.label} ${enabled} - ${p.description}`;
-    });
-    items.push('---');
-    items.push('Apply preset: Safe');
-    items.push('Apply preset: Balanced');
-    items.push('Apply preset: Power');
-    items.push('Cancel');
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '80%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Superpowers ',
-      keys: true,
-      vi: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-      if (index >= powers.length + 1) {
-        const presetName = index === powers.length + 1 ? 'safe' :
-                          index === powers.length + 2 ? 'balanced' : 'power';
-        this.config.superpowers = applyPreset(presetName);
-        await saveConfig(this.root, this.config, { scope: 'local' });
-        this.showMessage(`Applied preset: ${presetName}`, 'success');
-        list.destroy();
-        await this.showSuperpowersMenu();
-        return;
-      }
-      if (index === powers.length) {
-        list.destroy();
-        return;
-      }
-      const power = powers[index];
-      const current = isEnabled(this.config, power.name);
-      if (!this.config.superpowers) this.config.superpowers = {};
-      this.config.superpowers[power.name] = !current;
-      await saveConfig(this.root, this.config, { scope: 'local' });
-      this.showMessage(`Toggled ${power.name}: ${!current ? 'ON' : 'OFF'}`, 'success');
-      list.destroy();
-      await this.showSuperpowersMenu();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  showSwarmMenu() {
-    const items = [
-      'Run swarm (enter prompt)',
-      'Plan only (dry-run)',
-      'Cancel',
-    ];
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Swarm ',
-      keys: true,
-      vi: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-      this.showMessage('Use /swarm <prompt> in chat input', 'info');
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
+    form.key(['escape'], () => { closeForm(); });
   }
 
   showJsonViewer(title, data) {
+    this.uiMode = 'modal'; // block input handler
+
     const viewer = blessed.box({
       parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '80%',
+      top: 'center', left: 'center', width: '80%', height: '80%',
       tags: true,
       border: { type: 'line' },
       style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
       label: ` ${title} `,
-      scrollable: true,
-      alwaysScroll: true,
-      keys: true,
-      vi: true,
+      scrollable: true, alwaysScroll: true, keys: true, vi: true,
       content: JSON.stringify(data, null, 2),
     });
-
     viewer.focus();
-    this.screen.key('escape', () => {
+    const closeViewer = () => {
       viewer.destroy();
-      this.screen.unkey('escape');
-    });
+      this.uiMode = 'input';
+      this.inputBox.focus();
+      this.screen.render();
+    };
+    viewer.key(['escape'], () => { closeViewer(); });
   }
+
+  // ─── Tab Completion ───────────────────────────────────────────────
 
   getTabCompletion(input) {
     const commands = [
-      '/help', '/provider', '/config', '/mcp', '/skills', '/powers', '/superpowers',
-      '/swarm', '/exit', '/connect', '/models', '/permissions', '/self-improve',
-      '/key', '/theme', '/export', '/import',
+      '/help', '/clear', '/status', '/provider', '/models', '/config', '/mcp',
+      '/skills', '/powers', '/theme', '/history', '/mode', '/plan', '/build',
+      '/sessions', '/agents', '/diagnostics', '/undo', '/swarm', '/export',
+      '/import', '/exit', '/quit',
     ];
-    
     if (!input.startsWith('/')) return null;
-    
-    const matches = commands.filter(cmd => cmd.startsWith(input));
-    if (matches.length === 1) {
-      return matches[0] + ' ';
-    }
-    if (matches.length > 1) {
-      this.showMessage(`Completions: ${matches.join(', ')}`, 'info');
-    }
+    const matches = commands.filter(c => c.startsWith(input));
+    if (matches.length === 1) return matches[0] + ' ';
+    if (matches.length > 1) this.log(`Completions: ${matches.join(', ')}`, 'info');
     return null;
   }
 
-  async showThemeMenu() {
-    const themes = this.getThemes();
-    const items = Object.keys(themes).map(name => {
-      const active = name === this.currentTheme ? ' [ACTIVE]' : '';
-      return `${name}${active}`;
-    });
-    items.push('Cancel');
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Select Theme ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-      const themeName = Object.keys(themes)[index];
-      this.currentTheme = themeName;
-      this.applyTheme();
-      this.config.tui_theme = themeName;
-      await saveConfig(this.root, this.config, { scope: 'local' });
-      this.showMessage(`Applied theme: ${themeName}`, 'success');
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
+  // ─── Theme ────────────────────────────────────────────────────────
 
   getThemes() {
     return {
@@ -1344,35 +984,30 @@ class TUI {
         chat: { fg: 'white', bg: 'black', border: '#8700af' },
         input: { fg: 'white', bg: 'black', border: '#8700af' },
         status: { fg: 'black', bg: 'green' },
-        selected: { fg: 'black', bg: 'green' },
       },
       dark: {
         header: { fg: 'white', bg: '#1a1a1a', border: '#444' },
         chat: { fg: '#ddd', bg: '#0a0a0a', border: '#444' },
         input: { fg: '#ddd', bg: '#0a0a0a', border: '#444' },
         status: { fg: 'white', bg: '#222' },
-        selected: { fg: 'black', bg: '#888' },
       },
       light: {
         header: { fg: 'black', bg: '#e0e0e0', border: '#999' },
         chat: { fg: 'black', bg: 'white', border: '#999' },
         input: { fg: 'black', bg: 'white', border: '#999' },
         status: { fg: 'black', bg: '#d0d0d0' },
-        selected: { fg: 'white', bg: '#666' },
       },
       ocean: {
         header: { fg: 'white', bg: '#004d7a', border: '#0080c0' },
         chat: { fg: '#e0f7ff', bg: '#001a33', border: '#0080c0' },
         input: { fg: '#e0f7ff', bg: '#001a33', border: '#0080c0' },
         status: { fg: 'white', bg: '#006699' },
-        selected: { fg: 'black', bg: '#00a8e8' },
       },
       matrix: {
         header: { fg: '#00ff00', bg: 'black', border: '#00ff00' },
         chat: { fg: '#00ff00', bg: 'black', border: '#00ff00' },
         input: { fg: '#00ff00', bg: 'black', border: '#00ff00' },
         status: { fg: 'black', bg: '#00ff00' },
-        selected: { fg: 'black', bg: '#00ff00' },
       },
     };
   }
@@ -1380,564 +1015,58 @@ class TUI {
   applyTheme() {
     const themes = this.getThemes();
     const theme = themes[this.currentTheme] || themes.default;
-
     this.header.style.fg = theme.header.fg;
     this.header.style.bg = theme.header.bg;
     this.header.style.border.fg = theme.header.border;
-
     this.chatBox.style.fg = theme.chat.fg;
     this.chatBox.style.bg = theme.chat.bg;
     this.chatBox.style.border.fg = theme.chat.border;
-
     this.inputBox.style.fg = theme.input.fg;
     this.inputBox.style.bg = theme.input.bg;
     this.inputBox.style.border.fg = theme.input.border;
-
     this.statusBar.style.fg = theme.status.fg;
     this.statusBar.style.bg = theme.status.bg;
-
     this.screen.render();
   }
 
-  async showExportImportMenu() {
-    const items = [
-      'Export config (local)',
-      'Export config (global)',
-      'Export config (merged)',
-      'Import config to local',
-      'Import config to global',
-      'Cancel',
-    ];
+  // ─── Core Utilities ───────────────────────────────────────────────
 
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '60%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Export/Import Config ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-
-      try {
-        if (index === 0 || index === 1 || index === 2) {
-          // Export
-          const scope = index === 0 ? 'local' : index === 1 ? 'global' : 'merged';
-          await this.exportConfig(scope);
-        } else if (index === 3 || index === 4) {
-          // Import
-          const scope = index === 3 ? 'local' : 'global';
-          await this.importConfig(scope);
-        }
-      } catch (error) {
-        this.showMessage(`Error: ${error.message}`, 'error');
-      }
-      
-      list.destroy();
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
+  async detectGitBranch() {
+    try {
+      const fs = require('node:fs/promises');
+      const path = require('node:path');
+      const content = await fs.readFile(path.join(this.root, '.git', 'HEAD'), 'utf8');
+      const match = content.match(/ref: refs\/heads\/(.+)/);
+      return match ? match[1].trim() : 'detached';
+    } catch { return null; }
   }
 
-  async exportConfig(scope) {
-    const fs = require('node:fs/promises');
-    const path = require('node:path');
-    const config = await loadConfig(this.root, { scope });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `sicli-config-${scope}-${timestamp}.json`;
-    const filepath = path.join(this.root, filename);
-    await fs.writeFile(filepath, JSON.stringify(config, null, 2));
-    this.showMessage(`Exported ${scope} config to ${filename}`, 'success');
+  updateHeader() {
+    const provider = this.config?.active_provider || 'unknown';
+    const model = this.config?.active_model || 'unknown';
+    const permMode = this.config?.permission_mode || 'unknown';
+    const cwd = process.cwd().split(/[\\/]/).pop() || process.cwd();
+    const modeDisplay = getModeDisplay(this.currentMode);
+    const gitPart = this.gitBranch ? ` [${this.gitBranch}]` : '';
+    this.header.setContent(
+      `{center}{bold}sicli{/bold} | ${cwd}${gitPart} | ${provider}/${model} | {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg} | ${permMode}{/center}`
+    );
   }
 
-  async importConfig(scope) {
-    const form = blessed.form({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '40%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      label: ` Import Config (${scope}) `,
-      keys: true,
-      mouse: true,
-    });
-
-    blessed.text({
-      parent: form,
-      top: 2,
-      left: 2,
-      content: 'Config file path (relative or absolute):',
-      style: { fg: 'white' },
-    });
-
-    const textbox = blessed.textbox({
-      parent: form,
-      top: 4,
-      left: 2,
-      width: '90%',
-      height: 3,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      inputOnFocus: true,
-      mouse: true,
-    });
-
-    const submitBtn = blessed.button({
-      parent: form,
-      top: 8,
-      left: 2,
-      width: 20,
-      height: 3,
-      content: 'Import',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'green', border: { fg: '#8700af' } },
-      mouse: true,
-    });
-
-    const cancelBtn = blessed.button({
-      parent: form,
-      top: 8,
-      left: 25,
-      width: 20,
-      height: 3,
-      content: 'Cancel',
-      border: { type: 'line' },
-      style: { fg: 'black', bg: 'red', border: { fg: '#8700af' } },
-      mouse: true,
-    });
-
-    submitBtn.on('press', async () => {
-      const filepath = textbox.getValue().trim();
-      if (!filepath) {
-        this.showMessage('File path is required', 'error');
-        return;
-      }
-
-      try {
-        const fs = require('node:fs/promises');
-        const path = require('node:path');
-        const fullPath = path.isAbsolute(filepath) ? filepath : path.join(this.root, filepath);
-        const content = await fs.readFile(fullPath, 'utf8');
-        const importedConfig = JSON.parse(content);
-        await saveConfig(this.root, importedConfig, { scope, backup: true });
-        this.config = await loadConfig(this.root);
-        this.updateHeader();
-        this.showMessage(`Imported config from ${filepath}`, 'success');
-        form.destroy();
-        this.screen.render();
-      } catch (error) {
-        this.showMessage(`Import failed: ${error.message}`, 'error');
-      }
-    });
-
-    cancelBtn.on('press', () => {
-      form.destroy();
-      this.screen.render();
-    });
-
-    form.focus();
-    this.screen.key('escape', () => {
-      form.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async handleModeCommand(args) {
-    const mode = args[0]?.toLowerCase();
-    if (mode === 'plan') {
-      await this.switchToPlanMode();
-    } else if (mode === 'build') {
-      await this.switchToBuildMode();
-    } else {
-      this.showMessage('Usage: /mode <plan|build>', 'error');
-    }
-  }
-
-  async switchToPlanMode() {
-    this.currentMode = MODES.PLAN;
-    const display = getModeDisplay(this.currentMode);
-    this.showMessage(`Switched to ${display.label} mode: ${display.description}`, 'success');
-    this.updateHeader();
-    this.screen.render();
-  }
-
-  async switchToBuildMode() {
-    this.currentMode = MODES.BUILD;
-    const display = getModeDisplay(this.currentMode);
-    this.showMessage(`Switched to ${display.label} mode: ${display.description}`, 'success');
-    this.updateHeader();
-    this.screen.render();
-  }
-
-  async toggleMode() {
-    const result = switchMode(this.currentMode);
-    this.currentMode = result.mode;
-    const display = getModeDisplay(this.currentMode);
-    this.showMessage(`Switched to ${display.label} mode: ${result.description}`, 'success');
-    this.updateHeader();
-    this.screen.render();
-  }
-
-  async showSessionsMenu() {
-    const { listSessions, createSession, loadSession, deleteSession, exportToMarkdown, getActiveSessionId, setActiveSessionId } = require('./sessions');
-    
-    const sessions = await listSessions(this.root);
-    const activeId = await getActiveSessionId(this.root);
-    
-    const items = [
-      '+ New Session',
-      ...sessions.map(s => {
-        const active = s.id === activeId ? ' [ACTIVE]' : '';
-        const date = new Date(s.updated).toLocaleString();
-        return `${s.title}${active} (${s.messageCount} msgs, ${date})`;
-      }),
-      'Export Active Session',
-      'Delete Session',
-      'Cancel',
-    ];
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Sessions (F8) ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        // Cancel
-        list.destroy();
-        return;
-      }
-
-      if (index === 0) {
-        // New session
-        list.destroy();
-        const session = await createSession(this.root, {
-          title: `Session ${new Date().toLocaleString()}`,
-          mode: this.currentMode,
-          provider: this.config?.active_provider,
-          model: this.config?.active_model,
-        });
-        await setActiveSessionId(this.root, session.id);
-        this.showMessage(`Created new session: ${session.id}`, 'success');
-        this.screen.render();
-        return;
-      }
-
-      if (index === sessions.length + 1) {
-        // Export
-        list.destroy();
-        if (!activeId) {
-          this.showMessage('No active session to export', 'error');
-          return;
-        }
-        try {
-          const markdown = await exportToMarkdown(this.root, activeId);
-          const fs = require('node:fs/promises');
-          const path = require('node:path');
-          const filename = `session-${activeId}-${Date.now()}.md`;
-          await fs.writeFile(path.join(this.root, filename), markdown);
-          this.showMessage(`Exported to ${filename}`, 'success');
-        } catch (error) {
-          this.showMessage(`Export failed: ${error.message}`, 'error');
-        }
-        this.screen.render();
-        return;
-      }
-
-      if (index === sessions.length + 2) {
-        // Delete
-        list.destroy();
-        // Show delete picker
-        await this.showDeleteSessionPicker();
-        return;
-      }
-
-      // Resume session
-      const session = sessions[index - 1];
-      list.destroy();
-      await setActiveSessionId(this.root, session.id);
-      this.showMessage(`Resumed session: ${session.title}`, 'success');
-      
-      // Load messages into chat
-      const loaded = await loadSession(this.root, session.id);
-      if (loaded && loaded.messages) {
-        this.chatHistory = [];
-        for (const msg of loaded.messages) {
-          const timestamp = new Date(msg.timestamp).toLocaleTimeString();
-          const role = msg.role === 'user' ? 'user' : 'agent';
-          this.showMessage(msg.content, role);
-        }
-      }
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async showDeleteSessionPicker() {
-    const { listSessions, deleteSession, getActiveSessionId } = require('./sessions');
-    const sessions = await listSessions(this.root);
-    const activeId = await getActiveSessionId(this.root);
-
-    if (sessions.length === 0) {
-      this.showMessage('No sessions to delete', 'info');
-      return;
-    }
-
-    const items = sessions.map(s => {
-      const active = s.id === activeId ? ' [ACTIVE - cannot delete]' : '';
-      return `${s.title}${active}`;
-    });
-    items.push('Cancel');
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: '60%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'red' } },
-      label: ' Delete Session ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === items.length - 1) {
-        list.destroy();
-        return;
-      }
-
-      const session = sessions[index];
-      if (session.id === activeId) {
-        list.destroy();
-        this.showMessage('Cannot delete active session', 'error');
-        return;
-      }
-
-      list.destroy();
-      await deleteSession(this.root, session.id);
-      this.showMessage(`Deleted session: ${session.title}`, 'success');
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async handleUndo() {
-    const { undo, listSnapshots } = require('./snapshot');
-    const snaps = await listSnapshots(this.root);
-    if (snaps.length === 0) {
-      this.showMessage('No snapshots to undo', 'info');
-      return;
-    }
-    const result = await undo(this.root);
-    if (result.ok) {
-      this.showMessage(result.message, 'success');
-    } else {
-      this.showMessage(`Undo failed: ${result.error}`, 'error');
-    }
-    this.screen.render();
-  }
-
-  showAgentPicker() {
-    const { listAllAgents } = require('./agents');
-    const agents = listAllAgents(this.config || {});
-    const items = agents.map(a => {
-      const mode = a.mode === 'plan' ? '[PLAN]' : '[BUILD]';      const custom = a.custom ? ' (custom)' : '';      return `${a.name.padEnd(12)} ${mode}  ${a.description}${custom}`;
-    });
-
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Agent Picker (Ctrl+A) ',
-      keys: true,
-      vi: true,
-      mouse: true,
-      items,
-    });
-
-    list.on('select', async (item, index) => {
-      const agent = agents[index];
-      list.destroy();
-      this.currentMode = agent.mode;
-      this.updateHeader();
-      this.showMessage(`Switched to @${agent.name}: ${agent.description}`, 'success');
-      this.screen.render();
-    });
-
-    list.focus();
-    this.screen.key('escape', () => {
-      list.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async showPermissionPanel() {
-    const { listPermissionModes } = require('./config');
-    const currentMode = this.config?.permission_mode || 'unknown';
-    const modes = listPermissionModes();
-
-    const content = `{bold}Current Permission Mode: {green-fg}${currentMode}{/green-fg}{/bold}
-
-{bold}Available Modes:{/bold}
-${modes.map(m => {
-  const desc = m === 'secure' ? 'Most restrictive - all edits require approval' :
-               m === 'partial_secure' ? 'Read/append allowed, edits require approval' :
-               m === 'ai_reviewed' ? 'AI reviews decisions, asks for high-risk' :
-               m === 'auto_approve' ? 'All actions auto-approved (use with caution)' : '';
-  const marker = m === currentMode ? ' {green-fg}← ACTIVE{/green-fg}' : '';
-  return `  {bold}${m}{/bold}: ${desc}${marker}`;
-}).join('\n')}
-
-{bold}Mode Effects:{/bold}
-  • {cyan-fg}secure{/cyan-fg}:     read=allow  write=ask   edit=ask   run=ask
-  • {cyan-fg}partial{/cyan-fg}:    read=allow  write=ask   edit=ask   run=allow
-  • {cyan-fg}ai_reviewed{/cyan-fg}: read=allow  write=allow edit=ask   run=allow
-  • {cyan-fg}auto_approve{/cyan-fg}: read=allow  write=allow edit=allow run=allow
-
-Press Escape to close`;
-
-    const panel = blessed.box({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '75%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
-      label: ' Permissions ',
-      content,
-    });
-
-    panel.focus();
-    this.screen.key('escape', () => {
-      panel.destroy();
-      this.screen.unkey('escape');
-    });
-  }
-
-  async showDiagnosticsMenu() {
-    const { runTests, formatDiagnostics } = require('./diagnostics');
-    
-    const list = blessed.list({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '80%',
-      height: '70%',
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, selected: { fg: 'black', bg: 'green' } },
-      label: ' Diagnostics (F11) ',
-      keys: true,
-      vi: true,
-      items: [
-        'Run Tests (npm test)',
-        'Run TypeCheck (tsc)',
-        'Run Lint (eslint)',
-        'Clear Results',
-        'Cancel'
-      ]
-    });
-
-    list.on('select', async (item, index) => {
-      if (index === 4) {
-        list.destroy();
-        return;
-      }
-      
-      list.destroy();
-      this.showMessage('Running diagnostics...', 'info');
-      this.screen.render();
-
-      try {
-        const result = await runTests(this.root);
-        const output = formatDiagnostics(result.diagnostics);
-        
-        const diagBox = blessed.box({
-          parent: this.screen,
-          top: 'center',
-          left: 'center',
-          width: '90%',
-          height: '80%',
-          tags: true,
-          border: { type: 'line' },
-          style: { fg: 'white', bg: 'black', border: { fg: result.passed ? 'green' : 'red' } },
-          label: ` Diagnostics - ${result.passed ? 'PASSED' : 'FAILED'} (${result.diagnostics.length} errors) `,
-          scrollable: true,
-          alwaysScroll: true,
-          keys: true,
-          vi: true,
-          content: output
-        });
-
-        this.screen.key(['escape', 'q'], () => {
-          diagBox.destroy();
-          this.screen.unkey('escape');
-          this.screen.unkey('q');
-        });
-
-        diagBox.focus();
-        this.screen.render();
-      } catch (error) {
-        this.showMessage(`Diagnostics failed: ${error.message}`, 'error');
-        this.screen.render();
-      }
-    });
-
-    list.focus();
-    this.screen.render();
+  log(message, type = 'info') {
+    const ts = new Date().toLocaleTimeString();
+    const prefix = type === 'error' ? '{red-fg}ERR{/red-fg}' :
+                   type === 'success' ? '{green-fg}OK{/green-fg}' :
+                   type === 'user' ? '{cyan-fg}You{/cyan-fg}' :
+                   type === 'agent' ? '{yellow-fg}Agent{/yellow-fg}' :
+                   type === 'help' ? '' :
+                   '{gray-fg}INFO{/gray-fg}';
+    const line = prefix ? `{gray-fg}${ts}{/gray-fg} ${prefix}: ${message}` : message;
+    this.chatHistory.push(line);
+    // Cap chat history at 1000 lines to prevent memory bloat
+    if (this.chatHistory.length > 1000) this.chatHistory.shift();
+    this.chatBox.setContent(this.chatHistory.join('\n'));
+    this.chatBox.setScrollPerc(100);
   }
 
   switchToChat() {
@@ -1950,9 +1079,7 @@ Press Escape to close`;
     this.running = true;
     this.inputBox.focus();
     this.screen.render();
-    await new Promise(resolve => {
-      this.screen.once('destroy', resolve);
-    });
+    await new Promise(resolve => { this.screen.once('destroy', resolve); });
   }
 
   exit() {

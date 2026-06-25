@@ -6,8 +6,8 @@ set -e
 echo "🚀 Installing sicli (Self-Improving CLI)..."
 echo ""
 
-# Install globally
-npm install -g
+# Install globally from GitHub (works from any directory)
+npm install -g github:mcpe500/self-improve-cli
 
 echo ""
 echo "✅ Installation complete!"
