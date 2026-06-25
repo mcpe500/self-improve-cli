@@ -31,8 +31,8 @@ test('TUI tab completion returns null on no match', () => {
 
 test('TUI tab completion returns null for multiple matches', async (t) => {
   const tui = new TUI('/tmp/test');
-  // Mock showMessage to avoid screen access
-  tui.showMessage = () => {};
+  // Mock log to avoid screen access
+  tui.log = () => {};
   // /swarm and /self-improve both start with /s
   const completion = tui.getTabCompletion('/s');
   assert.equal(completion, null);
@@ -57,8 +57,8 @@ test('TUI getThemes returns object with theme definitions', () => {
 
 test('TUI has export/import methods', () => {
   const tui = new TUI('/tmp/test');
-  assert.equal(typeof tui.exportConfig, 'function');
-  assert.equal(typeof tui.importConfig, 'function');
+  assert.equal(typeof tui.handleExportCommand, 'function');
+  assert.equal(typeof tui.handleImportCommand, 'function');
 });
 
 test('TUI has MCP add/remove methods', () => {

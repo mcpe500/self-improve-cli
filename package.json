@@ -3,13 +3,21 @@
   "version": "0.2.0",
   "description": "Lightweight self-improving agentic coding CLI prototype.",
   "license": "MIT",
+  "files": [
+    "bin/",
+    "src/",
+    "profiles/",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md"
+  ],
   "bin": {
     "sicli": "bin/self-improve-cli.js"
   },
   "scripts": {
     "test": "node --test",
-    "check": "npm test",
-    "postinstall": "echo '✅ sicli installed! Run \"sicli init\" to setup workspace or \"sicli tui\" to launch TUI.'"
+    "check": "npm test"
   },
   "engines": {
     "node": ">=18"
@@ -40,7 +48,6 @@
   },
   "homepage": "https://github.com/mcpe500/self-improve-cli#readme",
   "author": "mcpe500",
-  "license": "MIT",
   "dependencies": {
     "blessed": "^0.1.81"
   }

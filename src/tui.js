@@ -677,6 +677,21 @@ class TUI {
     });
   }
 
+  async removeMCPServer(serverName) {
+    try {
+      const mcpConfig = await loadMcpConfig(this.root);
+      if (mcpConfig.mcpServers && mcpConfig.mcpServers[serverName]) {
+        delete mcpConfig.mcpServers[serverName];
+        await saveMcpConfig(this.root, mcpConfig);
+        this.log(`Removed MCP server: ${serverName}`, 'success');
+      } else {
+        this.log(`MCP server not found: ${serverName}`, 'error');
+      }
+    } catch (error) {
+      this.log(`Remove failed: ${error.message}`, 'error');
+    }
+  }
+
   showSkillsMenu() {
     Promise.all([discoverSkills(this.root), loadProfiles(this.root)]).then(([skills, { active }]) => {
       const activeNames = active.memory?.active_skills || [];
