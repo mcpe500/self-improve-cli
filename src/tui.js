@@ -58,50 +58,56 @@ class TUI {
   // ─── Layout ───────────────────────────────────────────────────────
 
   createLayout() {
-    // Header
-    this.header = blessed.box({
-      top: 0, left: 0, width: '100%', height: 3,
-      tags: true,
-      border: { type: 'line' },
-      style: { fg: 'white', bg: 'blue', border: { fg: '#8700af' } },
-      content: '{center}sicli — Loading...{/center}',
-    });
-    this.screen.append(this.header);
+    const SIDEBAR_W = 30;
 
-    // Chat area
+    // Chat area — left panel, full height minus footer+input
     this.chatBox = blessed.box({
-      top: 3, left: 0, width: '100%', height: '100%-7',
+      top: 0, left: 0, width: `100%-${SIDEBAR_W}`, height: '100%-4',
       tags: true,
       border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
+      label: ' {bold}sicli{/bold} ',
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, label: { fg: '#af87ff' } },
       scrollable: true,
       alwaysScroll: true,
-      scrollbar: { ch: ' ', track: { bg: 'grey' }, style: { inverse: true } },
+      scrollbar: { ch: '┃', track: { bg: '#222' }, style: { fg: '#8700af' } },
     });
     this.screen.append(this.chatBox);
 
-    // Status bar — minimal, OpenCode-style
-    this.statusBar = blessed.box({
+    // Sidebar — right panel, info pane
+    this.sidebar = blessed.box({
+      top: 0, right: 0, width: SIDEBAR_W, height: '100%-4',
+      tags: true,
+      border: { type: 'line' },
+      label: ' Info ',
+      style: { fg: '#ccc', bg: '#0a0a0a', border: { fg: '#444' }, label: { fg: '#af87ff' } },
+      scrollable: true,
+      alwaysScroll: false,
+    });
+    this.screen.append(this.sidebar);
+
+    // Footer — one-line status bar
+    this.footer = blessed.box({
       bottom: 3, left: 0, width: '100%', height: 1,
       tags: true,
-      style: { fg: 'black', bg: 'green' },
-      content: ' Enter: send | /help: commands | Tab: mode | ↑↓: history | Ctrl+C: quit',
+      style: { fg: '#000', bg: '#5f87af' },
     });
-    this.screen.append(this.statusBar);
+    this.screen.append(this.footer);
 
-    // Input — use textbox (not textarea) for reliable Enter/submit behavior.
-    // Do NOT set keys:true or vi:true — inputOnFocus already handles character input.
-    this.inputBox = blessed.textbox({
+    // Input box — multiline textarea
+    this.inputBox = blessed.textarea({
       bottom: 0, left: 0, width: '100%', height: 3,
       tags: true,
       border: { type: 'line' },
-      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' } },
+      label: ' > ',
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, label: { fg: '#afd700' } },
       inputOnFocus: true,
       mouse: true,
     });
     this.screen.append(this.inputBox);
 
-    // Click to focus
+    // Keep statusBar alias so existing command handlers still work
+    this.statusBar = this.footer;
+
     this.chatBox.on('click', () => { this.chatBox.focus(); this.screen.render(); });
     this.inputBox.on('click', () => { this.inputBox.focus(); this.screen.render(); });
   }
@@ -112,32 +118,53 @@ class TUI {
     // Ctrl+C always exits — no matter what mode
     this.screen.key(['C-c', 'C-x'], () => this.exit());
 
-    // Enter → submit prompt.
-    // Return true for ALL keys to prevent the textbox's internal inputOnFocus
-    // handler from double-inserting characters.
+    // ── Screen-level modal guard ──
+    // This fires for ALL keypresses regardless of which widget has focus.
+    // When a modal is open, swallow printable characters so they don't
+    // leak into the input box below.
+    this.screen.on('keypress', (ch, key) => {
+      if (this.uiMode !== 'modal') return; // only act in modal mode
+      // Allow Ctrl+C through (already handled above, but be safe)
+      if (key.ctrl && key.name === 'c') return;
+      // Allow the focused modal widget to handle arrows/enter/escape/vi keys
+      // by returning here — blessed routes them to the focused widget.
+      // We only need to block printable characters.
+      if (!key.ctrl && !key.meta && key.name !== 'enter' && key.name !== 'escape' &&
+          key.name !== 'up' && key.name !== 'down' && key.name !== 'left' && key.name !== 'right' &&
+          key.name !== 'tab' && key.name !== 'backspace' && key.name !== 'delete' &&
+          key.name !== 'j' && key.name !== 'k') {
+        // Printable character — swallow it
+        return true;
+      }
+    });
+
+    // ── Input box keypress handler ──
     this.inputBox.on('keypress', (ch, key) => {
-      // Block entirely when modal is open
       if (this.uiMode === 'modal') return true;
 
-      if (key.name === 'enter' && !key.ctrl && !key.meta) {
-        const input = this.inputBox.getValue().trim();
-        this.inputBox.clearValue();
-        this.inputBox.focus();
-        this.screen.render();
-        if (input) {
-          this.submitInput(input);
+      if (key.name === 'enter') {
+        if (key.shift) {
+          // Shift+Enter → insert newline
+          const val = this.inputBox.getValue();
+          this.inputBox.setValue(val + '\n');
+          this.screen.render();
+          return true;
         }
-        return true; // swallow
+        if (!key.ctrl && !key.meta) {
+          // Enter → submit
+          const input = this.inputBox.getValue().trim();
+          this.inputBox.clearValue();
+          this.inputBox.focus();
+          this.screen.render();
+          if (input) this.submitInput(input);
+          return true;
+        }
       }
       if (key.name === 'escape') {
         this.inputBox.clearValue();
         this.screen.render();
         return true;
       }
-
-      // For ALL other keys: return true to prevent double-insertion.
-      // The textbox with inputOnFocus:true has already inserted the character.
-      // If we let the event propagate, the textbox will insert it again.
       return true;
     });
 
@@ -551,23 +578,38 @@ class TUI {
 
   showProviderMenu() {
     const providers = listBuiltInProviders();
-    const items = providers.map(p => {
-      const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
-      const local = p.local ? ' (local)' : '';
-      return `${p.label}${local}${active}`;
-    });
-    items.push('+ Add custom provider');
-    items.push('Cancel');
+    const menuItems = [
+      ...providers.map(p => {
+        const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
+        const local = p.local ? ' (local)' : '';
+        return { kind: 'provider', id: p.id, label: `${p.label}${local}${active}`, provider: p };
+      }),
+      { kind: 'action', action: 'add-custom-provider', label: '+ Add custom provider' },
+      { kind: 'action', action: 'cancel', label: 'Cancel' },
+    ];
 
-    this.showList(' Select Provider ', items, async (index) => {
-      if (index === items.length - 1) return;
-      if (index === items.length - 2) { await this.addCustomProvider(); return; }
-      const provider = providers[index];
+    this.showList(' Select Provider ', menuItems.map(i => i.label), async (index) => {
+      const item = menuItems[index];
+      if (!item) {
+        this.log('Invalid selection.', 'error');
+        return;
+      }
+      if (item.kind === 'action') {
+        if (item.action === 'add-custom-provider') await this.addCustomProvider();
+        // Cancel does nothing — modal already closed by showList
+        return;
+      }
+      // kind === 'provider'
+      const provider = item.provider;
       this.config.active_provider = provider.id;
       this.config.active_model = provider.default_model;
       if (!this.config.providers) this.config.providers = {};
       this.config.providers[provider.id] = { ...provider };
-      await saveConfig(this.root, this.config, { scope: 'local' });
+      try {
+        await saveConfig(this.root, this.config, { scope: 'local' });
+      } catch (e) {
+        this.log(`Config save failed: ${e.message}`, 'error');
+      }
       this.updateHeader();
       this.log(`Switched to ${provider.label} / ${provider.default_model}`, 'success');
     });
@@ -1030,17 +1072,14 @@ class TUI {
   applyTheme() {
     const themes = this.getThemes();
     const theme = themes[this.currentTheme] || themes.default;
-    this.header.style.fg = theme.header.fg;
-    this.header.style.bg = theme.header.bg;
-    this.header.style.border.fg = theme.header.border;
     this.chatBox.style.fg = theme.chat.fg;
     this.chatBox.style.bg = theme.chat.bg;
     this.chatBox.style.border.fg = theme.chat.border;
     this.inputBox.style.fg = theme.input.fg;
     this.inputBox.style.bg = theme.input.bg;
     this.inputBox.style.border.fg = theme.input.border;
-    this.statusBar.style.fg = theme.status.fg;
-    this.statusBar.style.bg = theme.status.bg;
+    this.footer.style.fg = theme.status.fg;
+    this.footer.style.bg = theme.status.bg;
     this.screen.render();
   }
 
@@ -1057,36 +1096,87 @@ class TUI {
   }
 
   updateHeader() {
+    this.updateSidebar();
+    this.updateFooter();
+  }
+
+  updateSidebar() {
     const provider = this.config?.active_provider || 'unknown';
     const model = this.config?.active_model || 'unknown';
     const permMode = this.config?.permission_mode || 'unknown';
-    const cwd = process.cwd().split(/[\\/]/).pop() || process.cwd();
+    const cwd = process.cwd();
     const modeDisplay = getModeDisplay(this.currentMode);
-    const gitPart = this.gitBranch ? ` [${this.gitBranch}]` : '';
-    this.header.setContent(
-      `{center}{bold}sicli{/bold} | ${cwd}${gitPart} | ${provider}/${model} | {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg} | ${permMode}{/center}`
+    const branch = this.gitBranch || '—';
+    const msgCount = this.chatHistory.length;
+
+    const lines = [
+      `{bold}{#af87ff-fg}Provider{/#af87ff-fg}{/bold}`,
+      ` ${provider}`,
+      ``,
+      `{bold}{#af87ff-fg}Model{/#af87ff-fg}{/bold}`,
+      ` ${model}`,
+      ``,
+      `{bold}{#af87ff-fg}Mode{/#af87ff-fg}{/bold}`,
+      ` {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg}`,
+      ``,
+      `{bold}{#af87ff-fg}Permission{/#af87ff-fg}{/bold}`,
+      ` ${permMode}`,
+      ``,
+      `{#444-fg}${'─'.repeat(26)}{/#444-fg}`,
+      ``,
+      `{bold}{#af87ff-fg}Branch{/#af87ff-fg}{/bold}`,
+      ` {yellow-fg}${branch}{/yellow-fg}`,
+      ``,
+      `{bold}{#af87ff-fg}Directory{/#af87ff-fg}{/bold}`,
+      ` ${cwd.split(/[\\/]/).pop() || cwd}`,
+      ``,
+      `{#444-fg}${'─'.repeat(26)}{/#444-fg}`,
+      ``,
+      `{bold}{#af87ff-fg}Messages{/#af87ff-fg}{/bold}`,
+      ` ${msgCount}`,
+    ];
+    this.sidebar.setContent(lines.join('\n'));
+  }
+
+  updateFooter() {
+    const provider = this.config?.active_provider || '?';
+    const model = (this.config?.active_model || '?').split('-').slice(0, 2).join('-');
+    const permMode = this.config?.permission_mode || '?';
+    const cwd = process.cwd().split(/[\\/]/).pop() || process.cwd();
+    const branch = this.gitBranch ? ` ⎇ ${this.gitBranch}` : '';
+    const modeDisplay = getModeDisplay(this.currentMode);
+    this.footer.setContent(
+      ` {bold}${cwd}{/bold}${branch}  {bold}${provider}/${model}{/bold}  {${modeDisplay.color}-fg}${modeDisplay.label}{/${modeDisplay.color}-fg}  ${permMode}  {gray-fg}Enter:send  Shift+Enter:newline  Tab:mode  /help{/gray-fg}`
     );
   }
 
   log(message, type = 'info') {
     const ts = new Date().toLocaleTimeString();
-    const prefix = type === 'error' ? '{red-fg}ERR{/red-fg}' :
-                   type === 'success' ? '{green-fg}OK{/green-fg}' :
-                   type === 'user' ? '{cyan-fg}You{/cyan-fg}' :
-                   type === 'agent' ? '{yellow-fg}Agent{/yellow-fg}' :
-                   type === 'help' ? '' :
-                   '{gray-fg}INFO{/gray-fg}';
-    const line = prefix ? `{gray-fg}${ts}{/gray-fg} ${prefix}: ${message}` : message;
+    let line;
+    if (type === 'user') {
+      line = `{cyan-fg}┌─ You ──────────────────────────── ${ts}{/cyan-fg}\n{cyan-fg}│{/cyan-fg} ${message}\n{cyan-fg}└────────────────────────────────────{/cyan-fg}`;
+    } else if (type === 'agent') {
+      line = `{yellow-fg}┌─ Assistant ────────────────────────{/yellow-fg}\n{yellow-fg}│{/yellow-fg} ${message}\n{yellow-fg}└────────────────────────────────────{/yellow-fg}`;
+    } else if (type === 'error') {
+      line = `{red-fg}✗ ${ts} ${message}{/red-fg}`;
+    } else if (type === 'success') {
+      line = `{green-fg}✓ ${ts} ${message}{/green-fg}`;
+    } else if (type === 'help') {
+      line = message;
+    } else {
+      line = `{gray-fg}· ${ts}{/gray-fg} ${message}`;
+    }
     this.chatHistory.push(line);
-    // Cap chat history at 1000 lines to prevent memory bloat
-    if (this.chatHistory.length > 1000) this.chatHistory.shift();
+    if (this.chatHistory.length > 500) this.chatHistory.shift();
     this.chatBox.setContent(this.chatHistory.join('\n'));
     this.chatBox.setScrollPerc(100);
+    this.updateSidebar();
   }
 
   switchToChat() {
     this.currentView = 'chat';
-    this.updateHeader();
+    this.updateSidebar();
+    this.updateFooter();
     this.screen.render();
   }
 
