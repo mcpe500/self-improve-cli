@@ -142,6 +142,12 @@ class TUI {
     this.inputBox.on('keypress', (ch, key) => {
       if (this.uiMode === 'modal') return true;
 
+      // `/` on empty input → open Command Palette
+      if (ch === '/' && this.inputBox.getValue() === '') {
+        this.showCommandPalette();
+        return true;
+      }
+
       if (key.name === 'enter') {
         if (key.shift) {
           // Shift+Enter → insert newline
@@ -199,6 +205,12 @@ class TUI {
       if (this.uiMode === 'modal') return;
       this.toggleMode();
     });
+
+    // Ctrl+P → Provider/Model Picker modal
+    this.screen.key(['C-p'], () => {
+      if (this.uiMode === 'modal') return;
+      this.showProviderModelPicker();
+    });
   }
 
   // ─── Input Handling ───────────────────────────────────────────────
@@ -234,8 +246,7 @@ class TUI {
     this.log(input, 'user');
 
     this.processing = true;
-    this.statusBar.setContent(' {bold}Processing...{/bold} Ctrl+C to cancel');
-    this.screen.render();
+    this.startSpinner('Processing');
 
     try {
       const { runAgentTask } = require('./agent');
@@ -250,8 +261,7 @@ class TUI {
     }
 
     this.processing = false;
-    this.statusBar.setContent(' Enter: send | /help: commands | Tab: mode | ↑↓: history | Ctrl+C: quit');
-    this.screen.render();
+    this.stopSpinner();
   }
 
   async resolveReferences(input) {
@@ -524,6 +534,161 @@ class TUI {
     this.screen.render();
   }
 
+  // ─── Command Palette (/) ──────────────────────────────────────────
+
+  getPaletteCommands() {
+    return TUI.PALETTE_COMMANDS;
+  }
+
+  showCommandPalette() {
+    this.uiMode = 'modal';
+
+    const all = TUI.PALETTE_COMMANDS;
+    const container = blessed.box({
+      parent: this.screen,
+      top: 'center', left: 'center', width: '70%', height: '60%',
+      tags: true,
+      border: { type: 'line' },
+      label: ' Command Palette ',
+      style: { fg: 'white', bg: 'black', border: { fg: '#8700af' }, label: { fg: '#af87ff' } },
+    });
+
+    const filterInput = blessed.textbox({
+      parent: container,
+      top: 1, left: 1, width: '100%-4', height: 3,
+      border: { type: 'line' },
+      label: ' Filter ',
+      style: { fg: 'white', bg: 'black', border: { fg: '#5f87af' }, label: { fg: '#afd700' } },
+      inputOnFocus: true,
+      mouse: true,
+    });
+
+    const listBox = blessed.list({
+      parent: container,
+      top: 5, left: 1, width: '100%-4', height: '100%-7',
+      tags: true,
+      border: { type: 'line' },
+      style: { fg: 'white', bg: 'black', border: { fg: '#444' }, selected: { fg: 'black', bg: 'green' } },
+      keys: true, vi: true, mouse: true,
+      items: all.map(c => `${c.cmd.padEnd(16)} ${c.desc}`),
+    });
+
+    const renderFiltered = (query) => {
+      const q = (query || '').toLowerCase().trim();
+      const matches = q
+        ? all.filter(c => c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q))
+        : all;
+      listBox.setItems(matches.map(c => `${c.cmd.padEnd(16)} ${c.desc}`));
+      listBox.select(0);
+      this.screen.render();
+    };
+
+    filterInput.on('keypress', (_ch, key) => {
+      if (key.name === 'escape') { closeModal(); return; }
+      if (key.name === 'down' || (key.name === 'j' && key.ctrl)) {
+        listBox.focus(); listBox.down(); this.screen.render(); return;
+      }
+      if (key.name === 'enter') {
+        listBox.focus(); this.screen.render(); return;
+      }
+      setTimeout(() => renderFiltered(filterInput.getValue()), 0);
+    });
+
+    listBox.on('select', (_item, index) => {
+      const q = (filterInput.getValue() || '').toLowerCase().trim();
+      const matches = q
+        ? all.filter(c => c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q))
+        : all;
+      const selected = matches[index];
+      closeModal();
+      if (selected) {
+        this.inputBox.setValue(selected.cmd + ' ');
+        this.inputBox.focus();
+        this.screen.render();
+      }
+    });
+
+    listBox.key(['escape'], () => closeModal());
+
+    const closeModal = () => {
+      container.destroy();
+      this.uiMode = 'input';
+      this.inputBox.clearValue();
+      this.inputBox.focus();
+      this.screen.render();
+    };
+
+    filterInput.focus();
+    renderFiltered('');
+    this.screen.render();
+  }
+
+  // ─── Provider/Model Picker (Ctrl+P) ───────────────────────────────
+
+  showProviderModelPicker() {
+    const providers = listBuiltInProviders();
+    const menuItems = [
+      ...providers.map(p => {
+        const active = p.id === this.config.active_provider ? ' [ACTIVE]' : '';
+        const local = p.local ? ' (local)' : '';
+        return { kind: 'provider', id: p.id, label: `${p.label}${local}${active}`, provider: p };
+      }),
+      { kind: 'action', action: 'cancel', label: 'Cancel' },
+    ];
+
+    this.showList(' Select Provider ', menuItems.map(i => i.label), async (index) => {
+      const item = menuItems[index];
+      if (!item || item.kind === 'action') return; // Cancel
+      const provider = item.provider;
+
+      // Show model sub-picker
+      let models = [];
+      try {
+        models = modelsForConfig({
+          ...this.config,
+          active_provider: provider.id,
+          providers: { ...(this.config.providers || {}), [provider.id]: { ...provider } },
+        });
+      } catch (e) {
+        models = provider.models || [provider.default_model];
+      }
+      if (!models || models.length === 0) models = [provider.default_model];
+
+      const modelItems = [
+        ...models.map(m => ({ kind: 'model', id: m, label: m === provider.default_model ? `${m} (default)` : m, model: m })),
+        { kind: 'action', action: 'cancel', label: 'Cancel' },
+      ];
+
+      this.showList(' Select Model ', modelItems.map(i => i.label), async (mIndex) => {
+        const mItem = modelItems[mIndex];
+        if (!mItem || mItem.kind === 'action') return;
+        const model = mItem.model;
+
+        this.config.active_provider = provider.id;
+        this.config.active_model = model;
+        if (!this.config.providers) this.config.providers = {};
+        this.config.providers[provider.id] = { ...provider };
+
+        try {
+          await saveConfig(this.root, this.config, { scope: 'local' });
+        } catch (e) {
+          this.log(`Config save failed: ${e.message}`, 'error');
+        }
+        this.updateHeader();
+        this.log(`Switched to ${provider.label} / ${model}`, 'success');
+
+        // API key check
+        try {
+          const hasKey = await hasProviderApiKey(this.root, provider.id);
+          if (!hasKey && !provider.local) {
+            this.log(`⚠ No API key set for ${provider.id}. Use /key to add one.`, 'info');
+          }
+        } catch (_) { /* ignore key check errors */ }
+        this.screen.render();
+      });
+    });
+  }
+
   // ─── Undo ─────────────────────────────────────────────────────────
 
   async handleUndo() {
@@ -546,6 +711,27 @@ class TUI {
     this.screen.render();
   }
 
+  // ─── Spinner ──────────────────────────────────────────────────────
+
+  startSpinner(msg = 'Processing') {
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    this._spinnerInterval = setInterval(() => {
+      if (this.footer) {
+        this.footer.setContent(` ${frames[i++ % frames.length]} ${msg}... Ctrl+C to cancel`);
+        if (this.screen) this.screen.render();
+      }
+    }, 80);
+  }
+
+  stopSpinner() {
+    if (this._spinnerInterval) {
+      clearInterval(this._spinnerInterval);
+      this._spinnerInterval = null;
+    }
+    this.updateFooter();
+  }
+
   // ─── Shell Commands ───────────────────────────────────────────────
 
   async handleShellCommand(cmd) {
@@ -554,24 +740,44 @@ class TUI {
       return;
     }
     this.log(`$ ${cmd}`, 'info');
-    this.screen.render();
+    this.startSpinner(`$ ${cmd.slice(0, 40)}`);
+    if (this.screen) this.screen.render();
 
     try {
-      const { execFile } = require('node:child_process');
+      const { spawn } = require('node:child_process');
       const parts = cmd.split(/\s+/);
-      await new Promise((resolve, reject) => {
-        execFile(parts[0], parts.slice(1), {
-          cwd: this.root, timeout: 30000, maxBuffer: 1024 * 1024, shell: false,
-        }, (error, stdout, stderr) => {
-          if (stdout) this.log(stdout.trim().slice(0, 2000), 'info');
-          if (stderr) this.log(stderr.trim().slice(0, 2000), error ? 'error' : 'info');
-          if (error) reject(error); else resolve();
+      await new Promise((resolve) => {
+        const child = spawn(parts[0], parts.slice(1), { cwd: this.root, shell: false });
+        let buf = '';
+        const flush = (final = false) => {
+          if (buf.trim()) {
+            this.log(buf.trimEnd().slice(0, 2000), 'info');
+            buf = '';
+          }
+          if (final && this.screen) this.screen.render();
+        };
+        const flushTimer = setInterval(() => flush(), 200);
+        child.stdout.on('data', (d) => { buf += d.toString('utf8'); });
+        child.stderr.on('data', (d) => {
+          this.log(d.toString('utf8').trimEnd().slice(0, 500), 'error');
+          if (this.screen) this.screen.render();
+        });
+        child.on('close', (code) => {
+          clearInterval(flushTimer);
+          flush(true);
+          if (code !== 0) this.log(`Exit code: ${code}`, 'error');
+          resolve();
+        });
+        child.on('error', (e) => {
+          clearInterval(flushTimer);
+          this.log(e.message, 'error');
+          resolve();
         });
       });
-    } catch (error) {
-      this.log(`Command failed: ${error.message}`, 'error');
+    } finally {
+      this.stopSpinner();
+      if (this.screen) this.screen.render();
     }
-    this.screen.render();
   }
 
   // ─── Interactive Menus ────────────────────────────────────────────
@@ -1193,6 +1399,34 @@ class TUI {
     process.exit(0);
   }
 }
+
+TUI.PALETTE_COMMANDS = [
+  { cmd: '/help',        desc: 'Show all commands' },
+  { cmd: '/clear',       desc: 'Clear conversation' },
+  { cmd: '/status',      desc: 'Show current status' },
+  { cmd: '/provider',    desc: 'Switch AI provider' },
+  { cmd: '/providers',   desc: 'Same as /provider' },
+  { cmd: '/models',      desc: 'List available models' },
+  { cmd: '/config',      desc: 'Configuration settings' },
+  { cmd: '/mcp',         desc: 'MCP server management' },
+  { cmd: '/skills',      desc: 'Manage skills' },
+  { cmd: '/superpowers', desc: 'Toggle superpowers' },
+  { cmd: '/powers',      desc: 'Alias for /superpowers' },
+  { cmd: '/theme',       desc: 'Change color theme' },
+  { cmd: '/mode',        desc: 'Switch plan/build mode' },
+  { cmd: '/plan',        desc: 'Switch to plan mode' },
+  { cmd: '/build',       desc: 'Switch to build mode' },
+  { cmd: '/undo',        desc: 'Undo last file change' },
+  { cmd: '/sessions',    desc: 'Session management' },
+  { cmd: '/agents',      desc: 'Agent picker' },
+  { cmd: '/history',     desc: 'Show command history' },
+  { cmd: '/swarm',       desc: 'Swarm orchestration' },
+  { cmd: '/export',      desc: 'Export conversation' },
+  { cmd: '/import',      desc: 'Import conversation' },
+  { cmd: '/diagnostics', desc: 'System diagnostics' },
+  { cmd: '/exit',        desc: 'Exit TUI' },
+  { cmd: '/quit',        desc: 'Alias for /exit' },
+];
 
 async function startTUI(root, options = {}) {
   const tui = new TUI(root, options);
